@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-// Cache for klines (10s) and ticker (5s)
 const cache = new Map<string, { data: unknown; expiry: number }>()
 
 function getCached(key: string): unknown | null {
@@ -22,14 +21,11 @@ function setCached(key: string, data: unknown, ttlMs: number) {
   }
 }
 
-// Binance API mirrors — try multiple to bypass 451 geo-restriction
+// API bases to try in order (Binance international → Binance.US → fallbacks)
 const BINANCE_BASES = [
   'https://api.binance.com',
-  'https://api1.binance.com',
-  'https://api2.binance.com',
-  'https://api3.binance.com',
   'https://api-gcp.binance.com',
-  'https://data-api.binance.vision',  // Public data endpoint, no geo-block
+  'https://api.binance.us',  // US-legal, no geo-block
 ]
 
 export async function GET(request: NextRequest) {
@@ -45,14 +41,13 @@ export async function GET(request: NextRequest) {
   const targetPath = `/api/v3/${path}?${params.toString()}`
   const cacheKey = targetPath
   
-  // Check cache first (klines: 10s, ticker: 5s, depth: 2s)
   const ttl = path.includes('klines') ? 10000 : path.includes('ticker') ? 5000 : path.includes('depth') ? 2000 : 3000
   const cached = getCached(cacheKey)
   if (cached) {
     return NextResponse.json(cached, { headers: { 'X-Cache': 'HIT' } })
   }
   
-  // Try each Binance base until one works
+  // Try each base
   for (const base of BINANCE_BASES) {
     try {
       const targetUrl = `${base}${targetPath}`
@@ -62,7 +57,7 @@ export async function GET(request: NextRequest) {
           'User-Agent': 'Mozilla/5.0 (compatible; CryptoTraderPro/1.0)',
         },
         cache: 'no-store',
-        signal: AbortSignal.timeout(5000), // 5s timeout per attempt
+        signal: AbortSignal.timeout(5000),
       })
       
       if (res.ok) {
@@ -72,36 +67,30 @@ export async function GET(request: NextRequest) {
           headers: {
             'Cache-Control': 'public, s-maxage=10, stale-while-revalidate=30',
             'X-Cache': 'MISS',
-            'X-Binance-Base': base.split('//')[1].split('.')[0],
+            'X-Source': base.includes('binance.us') ? 'binance-us' : 'binance',
           },
         })
       }
       
-      // If 451, try next base. If 400, return error (bad request).
-      if (res.status === 451 || res.status === 403) {
-        continue // Try next mirror
+      if (res.status === 451 || res.status === 403 || res.status === 418) {
+        continue
       }
       
-      // Other errors (400, 404, etc.) — return immediately
-      const errText = await res.text()
+      // Other errors
       return NextResponse.json(
-        { error: `Binance API error: ${res.status}`, details: errText },
+        { error: `API error: ${res.status}` },
         { status: res.status }
       )
     } catch {
-      // Network error, try next base
       continue
     }
   }
   
-  // All bases failed — return stale cache if available, else error
+  // All bases failed — return stale cache if available
   const stale = cache.get(cacheKey)
   if (stale) {
     return NextResponse.json(stale.data, { headers: { 'X-Cache': 'STALE' } })
   }
   
-  return NextResponse.json(
-    { error: 'All Binance API mirrors failed' },
-    { status: 502 }
-  )
+  return NextResponse.json({ error: 'All API mirrors failed' }, { status: 502 })
 }

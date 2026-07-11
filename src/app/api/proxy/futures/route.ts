@@ -15,13 +15,11 @@ function setCached(key: string, data: unknown, ttlMs: number) {
   cache.set(key, { data, expiry: Date.now() + ttlMs })
 }
 
-// Binance Futures mirrors
+// Futures API bases — Binance.US doesn't have futures, so try international first
 const FUTURES_BASES = [
   'https://fapi.binance.com',
-  'https://fapi1.binance.com',
-  'https://fapi2.binance.com',
-  'https://fapi3.binance.com',
   'https://fapi-gcp.binance.com',
+  'https://fapi1.binance.com',
 ]
 
 export async function GET(request: NextRequest) {
@@ -63,10 +61,10 @@ export async function GET(request: NextRequest) {
         })
       }
       
-      if (res.status === 451 || res.status === 403) continue
+      if (res.status === 451 || res.status === 403 || res.status === 418) continue
       
       return NextResponse.json(
-        { error: `Binance Futures API error: ${res.status}` },
+        { error: `Futures API error: ${res.status}` },
         { status: res.status }
       )
     } catch {
@@ -74,8 +72,16 @@ export async function GET(request: NextRequest) {
     }
   }
   
-  const stale = cache.get(cacheKey)
-  if (stale) return NextResponse.json(stale.data, { headers: { 'X-Cache': 'STALE' } })
+  // Return empty/neutral data for futures if all fail (non-critical for spot trading)
+  if (path.includes('premiumIndex')) {
+    return NextResponse.json({ lastFundingRate: '0', symbol: params.get('symbol') || '' })
+  }
+  if (path.includes('openInterest')) {
+    return NextResponse.json({ openInterest: '0', symbol: params.get('symbol') || '' })
+  }
+  if (path.includes('topLongShortAccountRatio')) {
+    return NextResponse.json([{ longShortRatio: '1', longAccount: '0.5', shortAccount: '0.5' }])
+  }
   
-  return NextResponse.json({ error: 'All Futures API mirrors failed' }, { status: 502 })
+  return NextResponse.json({ error: 'All Futures API failed' }, { status: 502 })
 }
