@@ -79,14 +79,30 @@ export default function Home() {
   // Background monitor for price alerts
   usePriceAlertMonitor()
 
-  // Set dark theme + register service worker
+  // Set dark theme + register service worker with auto-update
   useEffect(() => {
     document.documentElement.classList.add('dark')
     document.body.style.backgroundColor = '#0a0a0a'
     document.body.style.color = '#e4e4e7'
 
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(err => {
+      navigator.serviceWorker.register('/sw.js').then((registration) => {
+        // Check for updates every 10 minutes
+        setInterval(() => {
+          registration.update()
+        }, 600000)
+        
+        // If new SW found, activate immediately
+        if (registration.waiting) {
+          registration.waiting.postMessage('SKIP_WAITING')
+        }
+        
+        // Listen for new SW taking over
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          // Reload page when new SW activated
+          window.location.reload()
+        })
+      }).catch(err => {
         console.error('SW registration failed:', err)
       })
     }

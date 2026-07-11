@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "CryptoTrader Pro — 6-Layer Analysis",
+  title: "CryptoTrader Pro — 6-Layer Analysis v7",
   description: "Professional crypto trading analysis system with 6-layer filtering, multi-timeframe technical analysis, and risk management for Binance traders.",
   keywords: ["crypto", "trading", "bitcoin", "binance", "analysis", "indicators"],
   authors: [{ name: "CryptoTrader Pro" }],

@@ -1,10 +1,12 @@
 // Service Worker for CryptoTrader Pro
-// Handles PWA install + push notification enhancement
+// Version: 7 (bump this number every time you push update)
+// Auto-update: network-first strategy, skipWaiting, clients.claim
 
-const CACHE_NAME = 'crypto-trader-pro-v1'
+const CACHE_VERSION = '7'
+const CACHE_NAME = `crypto-trader-pro-v${CACHE_VERSION}`
 const STATIC_ASSETS = ['/', '/manifest.json', '/logo.svg']
 
-// Install event — cache static assets
+// Install event — cache static assets + skip waiting (auto-update)
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
@@ -13,42 +15,39 @@ self.addEventListener('install', (event) => {
   )
 })
 
-// Activate event — clean old caches
+// Activate event — clean ALL old caches + claim clients immediately
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((cacheNames) => {
+      // Delete ALL caches that don't match current version
       return Promise.all(
         cacheNames
           .filter((name) => name !== CACHE_NAME)
-          .map((name) => caches.delete(name))
+          .map((name) => {
+            console.log('Deleting old cache:', name)
+            return caches.delete(name)
+          })
       )
     }).then(() => self.clients.claim())
   )
 })
 
-// Fetch event — network-first for API, cache-first for static
+// Fetch event — NETWORK-FIRST for everything (always get latest)
+// Only fall back to cache if network fails
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url)
 
   // Skip non-GET requests
   if (event.request.method !== 'GET') return
 
-  // Skip cross-origin requests (Binance, CoinGecko via proxy)
+  // Skip cross-origin requests (Binance, CoinGecko, Telegram)
   if (url.origin !== self.location.origin) return
 
-  // Network-first for API routes
-  if (url.pathname.startsWith('/api/')) {
-    event.respondWith(
-      fetch(event.request).catch(() => caches.match(event.request))
-    )
-    return
-  }
-
-  // Cache-first for static assets
+  // Network-first for ALL requests (static + API)
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      return cached || fetch(event.request).then((response) => {
-        // Cache successful responses
+    fetch(event.request)
+      .then((response) => {
+        // Cache successful responses for offline fallback
         if (response.status === 200) {
           const responseClone = response.clone()
           caches.open(CACHE_NAME).then((cache) => {
@@ -57,11 +56,16 @@ self.addEventListener('fetch', (event) => {
         }
         return response
       })
-    })
+      .catch(() => {
+        // Network failed — try cache
+        return caches.match(event.request).then((cached) => {
+          return cached || caches.match('/')
+        })
+      })
   )
 })
 
-// Push notification event (for future FCM integration)
+// Push notification event
 self.addEventListener('push', (event) => {
   if (!event.data) return
 
@@ -89,16 +93,21 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close()
   event.waitUntil(
     self.clients.matchAll({ type: 'window' }).then((clients) => {
-      // Focus existing window if open
       for (const client of clients) {
         if (client.url.includes(self.location.origin) && 'focus' in client) {
           return client.focus()
         }
       }
-      // Open new window
       if (self.clients.openWindow) {
         return self.clients.openWindow('/')
       }
     })
   )
+})
+
+// Message handler — allow page to trigger update
+self.addEventListener('message', (event) => {
+  if (event.data === 'SKIP_WAITING') {
+    self.skipWaiting()
+  }
 })
