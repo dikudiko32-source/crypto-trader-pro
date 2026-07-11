@@ -126,7 +126,7 @@ export async function analyzeMultipleTimeframes(
   
   // Calculate alignment score (0-100)
   const totalAnalyses = analyses.length
-  const maxAgreement = Math.max(bullishCount, bearCount(bearishCount), neutralCount)
+  const maxAgreement = Math.max(bullishCount, bearishCount, neutralCount)
   const alignmentScore = totalAnalyses > 0 ? (maxAgreement / totalAnalyses) * 100 : 0
   
   // Detect conflict (HTF vs LTF)
@@ -165,6 +165,3 @@ export async function analyzeMultipleTimeframes(
   }
 }
 
-function bearCount(n: number) {
-  return n
-}

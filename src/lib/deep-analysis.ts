@@ -24,7 +24,7 @@ export async function fetchScanMacroData(): Promise<ScanMacroData> {
     ])
     
     const events = getEconomicEvents()
-    const highImpactToday = events.filter(e => e.impact === 'HIGH').length
+    const highImpactToday = events.filter(e => e.impact === 'HIGH' || e.impact === 'CRITICAL').length
     
     const fgValue = fg?.value || 50
     const btcDom = global?.btcDominance || 54
@@ -239,7 +239,7 @@ async function checkFundamental(
     }
     
     // Volume / Market Cap check
-    const volToMcap = coin.totalVolume / coin.marketCap
+    const volToMcap = coin.marketCap > 0 ? coin.totalVolume / coin.marketCap : 0
     if (volToMcap > 0.1) {
       score += 10
       notes.push(`✅ Vol/MCap ${(volToMcap * 100).toFixed(1)}% — healthy liquidity`)
@@ -272,7 +272,7 @@ async function checkFundamental(
       }
       
       // Calculate inflation rate
-      inflationRate = ((coin.totalSupply - coin.circulatingSupply) / coin.circulatingSupply) * 100
+      inflationRate = coin.circulatingSupply > 0 ? ((coin.totalSupply - coin.circulatingSupply) / coin.circulatingSupply) * 100 : 0
       if (inflationRate > 200) {
         unlockRisk = 'CRITICAL'
         score -= 20

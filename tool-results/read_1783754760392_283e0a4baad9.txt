@@ -1,0 +1,808 @@
+     1→'use client'
+     2→
+     3→import { useEffect, useState } from 'react'
+     4→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+     5→import { Badge } from '@/components/ui/badge'
+     6→import { Button } from '@/components/ui/button'
+     7→import { Input } from '@/components/ui/input'
+     8→import { Label } from '@/components/ui/label'
+     9→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+    10→import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+    11→import { Checkbox } from '@/components/ui/checkbox'
+    12→import { Separator } from '@/components/ui/separator'
+    13→import { ScrollArea } from '@/components/ui/scroll-area'
+    14→import { Loader2, Search, AlertTriangle, CheckCircle2, XCircle, Zap } from 'lucide-react'
+    15→import { getKlines, getTicker24h, getFundingRate, getOpenInterest, getLongShortRatio } from '@/lib/binance'
+    16→import { getTopCoins, type CoinMarketData } from '@/lib/coingecko'
+    17→import { analyzeTimeframe, fibonacci } from '@/lib/indicators'
+    18→import { 
+    19→  scoreMacro, scoreNarrative, scoreFundamental, scoreTechnical, 
+    20→  scoreChecklist, scoreRisk, calculateTotalScore, defaultChecklist 
+    21→} from '@/lib/scoring'
+    22→import type { Candle, Timeframe, TechnicalAnalysis, Bias, TradeSetup, SetupType, LayerScore, CoinFundamental } from '@/lib/types'
+    23→import { useAppStore, formatIDR, formatNumber } from '@/store/app-store'
+    24→import { CandlestickChart } from '@/components/charts/candlestick-chart'
+    25→// MacroDashboard import removed (unused)
+    26→
+    27→interface SetupResult {
+    28→  setup: TradeSetup
+    29→  score: LayerScore
+    30→  candles4H: Candle[]
+    31→  scoreNotes: {
+    32→    macro: string[]
+    33→    narrative: string[]
+    34→    fundamental: string[]
+    35→    technical: string[]
+    36→    checklist: string[]
+    37→    risk: string[]
+    38→  }
+    39→}
+    40→
+    41→const TIMEFRAMES: Timeframe[] = ['1W', '1D', '4H', '1H']
+    42→
+    43→export function SetupFinder() {
+    44→  const [symbol, setSymbol] = useState('BTCUSDT')
+    45→  const [bias, setBias] = useState<Bias>('LONG')
+    46→  const [loading, setLoading] = useState(false)
+    47→  const [result, setResult] = useState<SetupResult | null>(null)
+    48→  const [error, setError] = useState<string | null>(null)
+    49→  const [allCoins, setAllCoins] = useState<CoinMarketData[]>([])
+    50→  const [checklist, setChecklist] = useState(defaultChecklist())
+    51→  const [openPositions, setOpenPositions] = useState(0)
+    52→  const [dailyDD, setDailyDD] = useState(0)
+    53→
+    54→  const { settings, addSetup, pushAlert, setups } = useAppStore()
+    55→
+    56→  // Load top coins for autocomplete
+    57→  useEffect(() => {
+    58→    async function loadCoins() {
+    59→      const coins = await getTopCoins(100)
+    60→      setAllCoins(coins)
+    61→    }
+    62→    loadCoins()
+    63→  }, [])
+    64→
+    65→  async function analyze() {
+    66→    setLoading(true)
+    67→    setError(null)
+    68→    setResult(null)
+    69→    try {
+    70→      // Fetch data for all timeframes
+    71→      const timeframeData: Record<Timeframe, TechnicalAnalysis> = {} as Record<Timeframe, TechnicalAnalysis>
+    72→      const candlesByTf: Record<Timeframe, Candle[]> = {} as Record<Timeframe, Candle[]>
+    73→      
+    74→      await Promise.all(
+    75→        TIMEFRAMES.map(async (tf) => {
+    76→          const candles = await getKlines(symbol, tf, 300)
+    77→          candlesByTf[tf] = candles
+    78→          // Always analyze, even with few candles (analyzeTimeframe handles edge cases)
+    79→          timeframeData[tf] = analyzeTimeframe(candles, tf)
+    80→        })
+    81→      )
+    82→
+    83→      // Check we have at least 1H and 4H data (the entry timeframes)
+    84→      if (!timeframeData['1H'] || !timeframeData['4H'] || candlesByTf['4H'].length < 20 || candlesByTf['1H'].length < 20) {
+    85→        throw new Error('Insufficient candle data for 1H/4H. Check symbol.')
+    86→      }
+    87→
+    88→      // Fetch additional data
+    89→      const [ticker, funding, oi, lsr] = await Promise.all([
+    90→        getTicker24h(symbol),
+    91→        getFundingRate(symbol),
+    92→        getOpenInterest(symbol.replace('USDT', '') + 'USDT'),
+    93→        getLongShortRatio(symbol.replace('USDT', '') + 'USDT'),
+    94→      ])
+    95→
+    96→      // Find coin fundamental (from CoinGecko)
+    97→      const coinData = allCoins.find(c => 
+    98→        c.symbol + 'USDT' === symbol || c.symbol === symbol.replace('USDT', '')
+    99→      )
+   100→      
+   101→      const fundamental: CoinFundamental = {
+   102→        symbol: symbol.replace('USDT', ''),
+   103→        name: coinData?.name || symbol,
+   104→        marketCap: coinData?.marketCap || 0,
+   105→        marketCapRank: coinData?.marketCapRank || 999,
+   106→        volume24h: ticker?.quoteVolume || coinData?.totalVolume || 0,
+   107→        volToMcap: coinData ? (ticker?.quoteVolume || coinData.totalVolume) / coinData.marketCap : 0,
+   108→        exchangeListings: 8,
+   109→        tokenomics: {
+   110→          circulating: coinData?.circulatingSupply || 0,
+   111→          total: coinData?.totalSupply || 0,
+   112→          fdv: coinData && coinData.totalSupply ? coinData.currentPrice * coinData.totalSupply : 0,
+   113→          fdvToMcap: coinData && coinData.totalSupply && coinData.marketCap > 0 
+   114→            ? (coinData.currentPrice * coinData.totalSupply) / coinData.marketCap 
+   115→            : 1,
+   116→          nextUnlock: null,
+   117→        },
+   118→        activeAddresses30d: 0,
+   119→        activeAddressesTrend: 'FLAT',
+   120→        devActivity: 50,
+   121→        newsSentiment: 50,
+   122→        verdict: 'PASS',
+   123→      }
+   124→
+   125→      // Determine setup type based on technical analysis
+   126→      const daily = timeframeData['1D']
+   127→      const h4 = timeframeData['4H']
+   128→      
+   129→      let setupType: SetupType = 'TREND_PULLBACK'
+   130→      if (daily.adx < 20) setupType = 'MEAN_REVERSION'
+   131→      else if (h4.bollinger.squeeze && daily.bollinger.squeeze) setupType = 'BREAKOUT'
+   132→
+   133→      // Calculate Fibonacci levels
+   134→      const recentCandles = candlesByTf['4H'].slice(-50)
+   135→      const swingLow = Math.min(...recentCandles.map(c => c.low))
+   136→      const swingHigh = Math.max(...recentCandles.map(c => c.high))
+   137→      const fib = fibonacci(swingLow, swingHigh)
+   138→
+   139→      // Calculate entry zone, SL, TP based on bias
+   140→      const currentPrice = timeframeData['1H'].price
+   141→      let entryZone: { lower: number; upper: number }
+   142→      let stopLoss: number
+   143→      let tps: { tp1: number; tp2: number; tp3: number }
+   144→      let entryTrigger: string
+   145→
+   146→      if (bias === 'NEUTRAL') {
+   147→        setError('Pilih LONG atau SHORT — NEUTRAL tidak bisa dianalisis')
+   148→        return
+   149→      }
+   150→      if (bias === 'LONG') {
+   151→        // Long setup: entry at pullback to fib 0.5-0.618 + EMA50 confluence
+   152→        const fib618 = fib.levels['0.618']
+   153→        const fib500 = fib.levels['0.500']
+   154→        const ema50_4h = h4.ema50
+   155→        entryZone = {
+   156→          lower: Math.min(fib618, ema50_4h * 0.99),
+   157→          upper: Math.max(fib500, ema50_4h * 1.01),
+   158→        }
+   159→        // SL below fib 0.786 or recent swing low
+   160→        stopLoss = Math.min(fib.levels['0.786'], swingLow * 0.98)
+   161→        // TPs at previous high + fib extensions
+   162→        tps = {
+   163→          tp1: swingHigh,
+   164→          tp2: fib.extensions['1.272'],
+   165→          tp3: fib.extensions['1.618'],
+   166→        }
+   167→        entryTrigger = `1H close above ${((entryZone.lower + entryZone.upper) / 2 * 1.005).toFixed(currentPrice < 1 ? 5 : 2)} with volume 1.5x avg`
+   168→      } else if (bias === 'SHORT') {
+   169→        // Short setup: entry at pullback to fib 0.5-0.618 (from highs)
+   170→        const fib618 = fib.levels['0.618']
+   171→        const fib500 = fib.levels['0.500']
+   172→        const ema50_4h = h4.ema50
+   173→        entryZone = {
+   174→          lower: Math.min(fib500, ema50_4h * 0.99),
+   175→          upper: Math.max(fib618, ema50_4h * 1.01),
+   176→        }
+   177→        stopLoss = Math.max(fib.levels['0.786'], swingHigh * 1.02)
+   178→        tps = {
+   179→          tp1: swingLow,
+   180→          tp2: swingLow - (swingHigh - swingLow) * 0.272,
+   181→          tp3: swingLow - (swingHigh - swingLow) * 0.618,
+   182→        }
+   183→        entryTrigger = `1H close below ${((entryZone.lower + entryZone.upper) / 2 * 0.995).toFixed(currentPrice < 1 ? 5 : 2)} with volume 1.5x avg`
+   184→      }
+   185→
+   186→      const entryMid = (entryZone.lower + entryZone.upper) / 2
+   187→      const risk = Math.abs(entryMid - stopLoss)
+   188→      const tp1Rr = Math.abs(tps.tp1 - entryMid) / risk
+   189→      const tp2Rr = Math.abs(tps.tp2 - entryMid) / risk
+   190→      const tp3Rr = Math.abs(tps.tp3 - entryMid) / risk
+   191→      const avgRr = (tp1Rr * 0.5 + tp2Rr * 0.3 + tp3Rr * 0.2)
+   192→
+   193→      // Position size
+   194→      const riskAmount = settings.capital * (settings.riskPerTrade / 100)
+   195→      const usdToIdr = 15800 // approximate
+   196→      const usdRisk = riskAmount / usdToIdr
+   197→      const quantity = usdRisk / risk
+   198→      const nominalValue = quantity * entryMid
+   199→
+   200→      // Score all 6 layers
+   201→      // Macro: build macro data from real fetched data (fearGreed, funding, etc.)
+   202→      // Import macro functions for real data
+   203→      const { getFearGreedIndex, getMoonPhase, getEconomicEvents } = await import('@/lib/macro')
+   204→      const { getGlobalData } = await import('@/lib/coingecko')
+   205→      const [fearGreedData, globalData] = await Promise.all([
+   206→        getFearGreedIndex(),
+   207→        getGlobalData(),
+   208→      ])
+   209→      const moonPhase = getMoonPhase()
+   210→      const economicEvents = getEconomicEvents()
+   211→      
+   212→      const fgValue = fearGreedData?.value || 50
+   213→      const btcDom = globalData?.btcDominance || 54
+   214→      const btcDomTrend: 'UP' | 'DOWN' | 'FLAT' = btcDom > 52 ? 'UP' : 'DOWN'
+   215→      const usdtTrend: 'UP' | 'DOWN' | 'FLAT' = fgValue < 40 ? 'UP' : 'DOWN'
+   216→      
+   217→      let fgLabel: 'Extreme Fear' | 'Fear' | 'Neutral' | 'Greed' | 'Extreme Greed' = 'Neutral'
+   218→      if (fgValue < 25) fgLabel = 'Extreme Fear'
+   219→      else if (fgValue < 45) fgLabel = 'Fear'
+   220→      else if (fgValue < 55) fgLabel = 'Neutral'
+   221→      else if (fgValue < 75) fgLabel = 'Greed'
+   222→      else fgLabel = 'Extreme Greed'
+   223→      
+   224→      const macroData = {
+   225→        btcDominance: btcDom,
+   226→        btcDominanceTrend: btcDomTrend,
+   227→        usdtDominance: 100 - btcDom - (globalData?.ethDominance || 17),
+   228→        usdtDominanceTrend: usdtTrend,
+   229→        otherBtcRatio: btcDom > 0 ? (100 - btcDom) / btcDom : 0.5,
+   230→        otherBtcTrend: 'UP' as const,
+   231→        fearGreed: fgValue,
+   232→        fearGreedLabel: fgLabel,
+   233→        fundingAggregate: funding?.fundingRate || 0.0008,
+   234→        openInterestBtc: oi?.openInterestValue || 18e9,
+   235→        longShortRatio: lsr?.longShortRatio || 1.0,
+   236→        moonPhase,
+   237→        economicEvents,
+   238→        macroVerdict: 'NEUTRAL' as Bias, // Will be set from scoreMacro result below
+   239→      }
+   240→      const macroScore = scoreMacro(macroData)
+   241→      // Use the real macro verdict from scoreMacro, not user's bias
+   242→      macroData.macroVerdict = macroScore.bias
+   243→      const narrativeScore = scoreNarrative(null) // No narrative context in this MVP
+   244→      const fundamentalScore = scoreFundamental(fundamental)
+   245→      const technicalScore = scoreTechnical(timeframeData, bias)
+   246→      const checklistScore = scoreChecklist(checklist)
+   247→      const riskScore = scoreRisk(avgRr, settings.riskPerTrade, openPositions, settings.maxConcurrentPositions, dailyDD, settings.dailyDrawdownLimit)
+   248→
+   249→      const totalScore = calculateTotalScore({
+   250→        macro: macroScore,
+   251→        narrative: narrativeScore,
+   252→        fundamental: fundamentalScore,
+   253→        technical: technicalScore,
+   254→        checklist: checklistScore,
+   255→        risk: riskScore,
+   256→      })
+   257→
+   258→      // Build the trade setup object
+   259→      const setup: TradeSetup = {
+   260→        id: Math.random().toString(36).slice(2),
+   261→        symbol,
+   262→        bias,
+   263→        setupType,
+   264→        confidence: totalScore.totalScore,
+   265→        createdAt: new Date().toISOString(),
+   266→        status: checklistScore.allRequiredChecked && totalScore.totalScore >= 70 ? 'READY' : 'WAIT_TRIGGER',
+   267→        timeframeAnalysis: timeframeData,
+   268→        fibonacci: fib,
+   269→        entry: {
+   270→          zone: entryZone,
+   271→          trigger: entryTrigger,
+   272→          triggerPrice: entryMid,
+   273→        },
+   274→        stopLoss: {
+   275→          price: stopLoss,
+   276→          reason: bias === 'LONG' 
+   277→            ? 'Below Fib 0.786 + structure invalidation' 
+   278→            : 'Above Fib 0.786 + structure invalidation',
+   279→        },
+   280→        takeProfits: {
+   281→          tp1: { price: tps.tp1, percent: 50, rr: tp1Rr },
+   282→          tp2: { price: tps.tp2, percent: 30, rr: tp2Rr },
+   283→          tp3: { price: tps.tp3, percent: 20, rr: tp3Rr },
+   284→        },
+   285→        rrAverage: avgRr,
+   286→        positionSize: {
+   287→          capital: settings.capital,
+   288→          riskPercent: settings.riskPerTrade,
+   289→          riskAmount,
+   290→          quantity,
+   291→          nominalValue,
+   292→        },
+   293→        invalidityConditions: [
+   294→          `4H close ${bias === 'LONG' ? 'below' : 'above'} ${stopLoss.toFixed(currentPrice < 1 ? 5 : 2)} (structure broken)`,
+   295→          funding && Math.abs(funding.fundingRate) > 0.0005 ? `Funding rate spikes > |0.05%|` : 'Funding rate stays neutral',
+   296→          'Narrative dies (top 5 narrative coins all -10% in 24h)',
+   297→          'BTC drops >5% in 24h (macro invalidation)',
+   298→        ],
+   299→        checklist,
+   300→        alerts: [
+   301→          { id: '1', type: 'INFO', condition: `Price enters entry zone (${entryZone.lower.toFixed(currentPrice < 1 ? 5 : 2)} - ${entryZone.upper.toFixed(currentPrice < 1 ? 5 : 2)})`, triggered: false },
+   302→          { id: '2', type: 'ACTION', condition: entryTrigger, triggered: false },
+   303→          { id: '3', type: 'WARNING', condition: `Price approaches SL (${stopLoss.toFixed(currentPrice < 1 ? 5 : 2)})`, triggered: false },
+   304→          { id: '4', type: 'CRITICAL', condition: `SL hit`, triggered: false },
+   305→          { id: '5', type: 'INFO', condition: `TP1 hit (${tps.tp1.toFixed(currentPrice < 1 ? 5 : 2)}) → move SL to BE`, triggered: false },
+   306→          { id: '6', type: 'INFO', condition: `TP2 hit → trailing stop active`, triggered: false },
+   307→          { id: '7', type: 'CRITICAL', condition: `Invalidity condition triggered → EXIT`, triggered: false },
+   308→        ],
+   309→        coinFundamental: fundamental,
+   310→        narrative: null,
+   311→      }
+   312→
+   313→      setResult({
+   314→        setup,
+   315→        score: totalScore,
+   316→        candles4H: candlesByTf['4H'] || [],
+   317→        scoreNotes: {
+   318→          macro: macroScore.notes,
+   319→          narrative: narrativeScore.notes,
+   320→          fundamental: fundamentalScore.notes,
+   321→          technical: technicalScore.notes,
+   322→          checklist: checklistScore.notes,
+   323→          risk: riskScore.notes,
+   324→        },
+   325→      })
+   326→    } catch (err) {
+   327→      console.error(err)
+   328→      setError(err instanceof Error ? err.message : 'Analysis failed')
+   329→    } finally {
+   330→      setLoading(false)
+   331→    }
+   332→  }
+   333→
+   334→  const [savedSetupId, setSavedSetupId] = useState<string | null>(null)
+   335→  
+   336→  function saveSetup() {
+   337→    if (!result) return
+   338→    if (savedSetupId === result.setup.id) return // Prevent duplicate save
+   339→    addSetup(result.setup)
+   340→    setSavedSetupId(result.setup.id)
+   341→    pushAlert({
+   342→      type: 'INFO',
+   343→      title: 'Setup Saved',
+   344→      message: `${result.setup.symbol} ${result.setup.bias} setup saved with confidence ${result.score.totalScore.toFixed(1)}`,
+   345→    })
+   346→  }
+   347→
+   348→  function toggleChecklist(idx: number) {
+   349→    setChecklist(prev => prev.map((item, i) => 
+   350→      i === idx ? { ...item, checked: !item.checked } : item
+   351→    ))
+   352→  }
+   353→
+   354→  const formatPrice = (p: number) => p < 1 ? p.toFixed(5) : p < 100 ? p.toFixed(2) : p.toFixed(0)
+   355→
+   356→  return (
+   357→    <div className="space-y-4">
+   358→      {/* Input Form */}
+   359→      <Card className="bg-zinc-900/50 border-zinc-800">
+   360→        <CardHeader className="pb-3">
+   361→          <CardTitle className="text-sm flex items-center gap-2">
+   362→            <Search className="h-4 w-4" />
+   363→            Coin Analysis Input
+   364→          </CardTitle>
+   365→        </CardHeader>
+   366→        <CardContent className="space-y-3">
+   367→          <div className="grid grid-cols-2 gap-3">
+   368→            <div>
+   369→              <Label htmlFor="symbol" className="text-xs text-zinc-400">Symbol (Binance)</Label>
+   370→              <Input
+   371→                id="symbol"
+   372→                value={symbol}
+   373→                onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+   374→                placeholder="BTCUSDT"
+   375→                className="bg-zinc-950 border-zinc-700 text-sm"
+   376→              />
+   377→            </div>
+   378→            <div>
+   379→              <Label className="text-xs text-zinc-400">Trade Bias</Label>
+   380→              <Select value={bias} onValueChange={(v) => setBias(v as Bias)}>
+   381→                <SelectTrigger className="bg-zinc-950 border-zinc-700">
+   382→                  <SelectValue />
+   383→                </SelectTrigger>
+   384→                <SelectContent>
+   385→                  <SelectItem value="LONG">🟢 LONG</SelectItem>
+   386→                  <SelectItem value="SHORT">🔴 SHORT</SelectItem>
+   387→                  <SelectItem value="NEUTRAL">⚪ NEUTRAL</SelectItem>
+   388→                </SelectContent>
+   389→              </Select>
+   390→            </div>
+   391→          </div>
+   392→
+   393→          <div className="grid grid-cols-2 gap-3">
+   394→            <div>
+   395→              <Label className="text-xs text-zinc-400">Open Positions</Label>
+   396→              <Input
+   397→                type="number"
+   398→                value={openPositions}
+   399→                onChange={(e) => setOpenPositions(parseInt(e.target.value) || 0)}
+   400→                min="0"
+   401→                className="bg-zinc-950 border-zinc-700 text-sm"
+   402→              />
+   403→            </div>
+   404→            <div>
+   405→              <Label className="text-xs text-zinc-400">Daily DD (%)</Label>
+   406→              <Input
+   407→                type="number"
+   408→                value={dailyDD}
+   409→                onChange={(e) => setDailyDD(parseFloat(e.target.value) || 0)}
+   410→                step="0.1"
+   411→                className="bg-zinc-950 border-zinc-700 text-sm"
+   412→              />
+   413→            </div>
+   414→          </div>
+   415→
+   416→          <Button 
+   417→            onClick={analyze} 
+   418→            disabled={loading}
+   419→            className="w-full"
+   420→            size="sm"
+   421→          >
+   422→            {loading ? (
+   423→              <>
+   424→                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+   425→                Analyzing 4 timeframes...
+   426→              </>
+   427→            ) : (
+   428→              <>
+   429→                <Zap className="h-4 w-4 mr-2" />
+   430→                Run 6-Layer Analysis
+   431→              </>
+   432→            )}
+   433→          </Button>
+   434→        </CardContent>
+   435→      </Card>
+   436→
+   437→      {error && (
+   438→        <Card className="bg-red-950/30 border-red-800">
+   439→          <CardContent className="p-3 text-sm text-red-300 flex items-center gap-2">
+   440→            <AlertTriangle className="h-4 w-4" />
+   441→            {error}
+   442→          </CardContent>
+   443→        </Card>
+   444→      )}
+   445→
+   446→      {/* Results */}
+   447→      {result && (
+   448→        <Tabs defaultValue="summary" className="w-full">
+   449→          <TabsList className="grid w-full grid-cols-5 h-8">
+   450→            <TabsTrigger value="summary" className="text-xs">Summary</TabsTrigger>
+   451→            <TabsTrigger value="technical" className="text-xs">Technical</TabsTrigger>
+   452→            <TabsTrigger value="chart" className="text-xs">Chart</TabsTrigger>
+   453→            <TabsTrigger value="checklist" className="text-xs">Checklist</TabsTrigger>
+   454→            <TabsTrigger value="alerts" className="text-xs">Alerts</TabsTrigger>
+   455→          </TabsList>
+   456→
+   457→          {/* SUMMARY TAB */}
+   458→          <TabsContent value="summary" className="space-y-3 mt-2">
+   459→            {/* Confidence Badge */}
+   460→            <Card className={`border-l-4 ${
+   461→              result.score.totalScore >= 80 ? 'border-l-emerald-500 bg-emerald-950/30' :
+   462→              result.score.totalScore >= 70 ? 'border-l-yellow-500 bg-yellow-950/20' :
+   463→              result.score.totalScore >= 60 ? 'border-l-orange-500 bg-orange-950/20' :
+   464→              'border-l-red-500 bg-red-950/20'
+   465→            }`}>
+   466→              <CardContent className="p-3">
+   467→                <div className="flex items-center justify-between mb-2">
+   468→                  <div>
+   469→                    <div className="text-xs text-zinc-400">Setup Confidence</div>
+   470→                    <div className="text-2xl font-bold">{result.score.totalScore.toFixed(1)}/100</div>
+   471→                    <div className="text-xs text-zinc-500">{result.score.confidence}</div>
+   472→                  </div>
+   473→                  <Badge variant={result.setup.status === 'READY' ? 'default' : 'secondary'} className={
+   474→                    result.setup.status === 'READY' ? 'bg-emerald-600' : ''
+   475→                  }>
+   476→                    {result.setup.status === 'READY' ? '✅ READY' : '⏳ WAIT'}
+   477→                  </Badge>
+   478→                </div>
+   479→                
+   480→                {/* Layer scores */}
+   481→                <div className="grid grid-cols-3 gap-2 mt-3 text-xs">
+   482→                  <LayerScoreCard label="L1 Macro" score={result.score.layer1Macro} notes={result.scoreNotes.macro} />
+   483→                  <LayerScoreCard label="L2 Narrative" score={result.score.layer2Narrative} notes={result.scoreNotes.narrative} />
+   484→                  <LayerScoreCard label="L3 Fund" score={result.score.layer3Fundamental} notes={result.scoreNotes.fundamental} />
+   485→                  <LayerScoreCard label="L4 Technical" score={result.score.layer4Technical} notes={result.scoreNotes.technical} />
+   486→                  <LayerScoreCard label="L5 Checklist" score={result.score.layer5Checklist} notes={result.scoreNotes.checklist} />
+   487→                  <LayerScoreCard label="L6 Risk" score={result.score.layer6Risk} notes={result.scoreNotes.risk} />
+   488→                </div>
+   489→              </CardContent>
+   490→            </Card>
+   491→
+   492→            {/* Trade Plan */}
+   493→            <Card className="bg-zinc-900/50 border-zinc-800">
+   494→              <CardHeader className="pb-2">
+   495→                <CardTitle className="text-sm">💰 Trade Plan</CardTitle>
+   496→              </CardHeader>
+   497→              <CardContent className="space-y-2 text-xs">
+   498→                <div className="grid grid-cols-2 gap-2">
+   499→                  <div>
+   500→                    <div className="text-zinc-500">Setup Type</div>
+   501→                    <div className="font-medium">{result.setup.setupType.replace(/_/g, ' ')}</div>
+   502→                  </div>
+   503→                  <div>
+   504→                    <div className="text-zinc-500">Avg R:R</div>
+   505→                    <div className="font-medium text-emerald-400">1:{result.setup.rrAverage.toFixed(2)}</div>
+   506→                  </div>
+   507→                </div>
+   508→                <Separator className="my-2" />
+   509→                <div>
+   510→                  <div className="text-zinc-500">Entry Zone</div>
+   511→                  <div className="font-mono text-blue-400">
+   512→                    {formatPrice(result.setup.entry.zone.lower)} - {formatPrice(result.setup.entry.zone.upper)}
+   513→                  </div>
+   514→                  <div className="text-zinc-500 mt-1">Trigger</div>
+   515→                  <div className="text-zinc-300">{result.setup.entry.trigger}</div>
+   516→                </div>
+   517→                <Separator className="my-2" />
+   518→                <div className="grid grid-cols-2 gap-2">
+   519→                  <div>
+   520→                    <div className="text-zinc-500">Stop Loss</div>
+   521→                    <div className="font-mono text-red-400">{formatPrice(result.setup.stopLoss.price)}</div>
+   522→                    <div className="text-zinc-600 text-[10px]">{result.setup.stopLoss.reason}</div>
+   523→                  </div>
+   524→                  <div>
+   525→                    <div className="text-zinc-500">Take Profits</div>
+   526→                    <div className="font-mono text-emerald-400">
+   527→                      TP1: {formatPrice(result.setup.takeProfits.tp1.price)} (50%, 1:{result.setup.takeProfits.tp1.rr.toFixed(2)})
+   528→                    </div>
+   529→                    <div className="font-mono text-emerald-400">
+   530→                      TP2: {formatPrice(result.setup.takeProfits.tp2.price)} (30%, 1:{result.setup.takeProfits.tp2.rr.toFixed(2)})
+   531→                    </div>
+   532→                    <div className="font-mono text-emerald-400">
+   533→                      TP3: {formatPrice(result.setup.takeProfits.tp3.price)} (20%, 1:{result.setup.takeProfits.tp3.rr.toFixed(2)})
+   534→                    </div>
+   535→                  </div>
+   536→                </div>
+   537→                <Separator className="my-2" />
+   538→                <div>
+   539→                  <div className="text-zinc-500">Position Size</div>
+   540→                  <div className="font-mono">
+   541→                    Capital: {formatIDR(result.setup.positionSize.capital)} • Risk: {result.setup.positionSize.riskPercent}% = {formatIDR(result.setup.positionSize.riskAmount)}
+   542→                  </div>
+   543→                  <div className="font-mono">
+   544→                    Quantity: {result.setup.positionSize.quantity.toFixed(4)} • Nominal: ${formatNumber(result.setup.positionSize.nominalValue)}
+   545→                  </div>
+   546→                </div>
+   547→              </CardContent>
+   548→            </Card>
+   549→
+   550→            {/* Invalidity Conditions */}
+   551→            <Card className="bg-red-950/20 border-red-900/50">
+   552→              <CardHeader className="pb-2">
+   553→                <CardTitle className="text-sm flex items-center gap-2">
+   554→                  <AlertTriangle className="h-4 w-4 text-red-400" />
+   555→                  Invalidity Conditions
+   556→                </CardTitle>
+   557→              </CardHeader>
+   558→              <CardContent className="space-y-1">
+   559→                {result.setup.invalidityConditions.map((c, i) => (
+   560→                  <div key={i} className="text-xs text-red-300 flex items-start gap-2">
+   561→                    <span className="text-red-500">•</span>
+   562→                    <span>{c}</span>
+   563→                  </div>
+   564→                ))}
+   565→              </CardContent>
+   566→            </Card>
+   567→
+   568→            <Button 
+   569→              onClick={saveSetup} 
+   570→              className="w-full"
+   571→              disabled={savedSetupId === result?.setup.id}
+   572→              variant={savedSetupId === result?.setup.id ? "outline" : "default"}
+   573→            >
+   574→              {savedSetupId === result?.setup.id ? '✓ Setup Saved' : 'Save Setup to Tracker'}
+   575→            </Button>
+   576→          </TabsContent>
+   577→
+   578→          {/* TECHNICAL TAB */}
+   579→          <TabsContent value="technical" className="space-y-3 mt-2">
+   580→            {TIMEFRAMES.map(tf => {
+   581→              const ta = result.setup.timeframeAnalysis[tf]
+   582→              if (!ta) return null
+   583→              return (
+   584→                <Card key={tf} className="bg-zinc-900/50 border-zinc-800">
+   585→                  <CardHeader className="pb-2">
+   586→                    <div className="flex items-center justify-between">
+   587→                      <CardTitle className="text-sm">{tf} Timeframe</CardTitle>
+   588→                      <Badge variant="outline" className={
+   589→                        ta.verdict === 'BULLISH' ? 'border-emerald-500 text-emerald-400' :
+   590→                        ta.verdict === 'BEARISH' ? 'border-red-500 text-red-400' : ''
+   591→                      }>
+   592→                        {ta.verdict}
+   593→                      </Badge>
+   594→                    </div>
+   595→                  </CardHeader>
+   596→                  <CardContent className="text-xs space-y-2">
+   597→                    <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+   598→                      <div>Trend: <span className="text-zinc-300">{ta.trend}</span></div>
+   599→                      <div>ADX: <span className="text-zinc-300">{ta.adx.toFixed(1)}</span></div>
+   600→                      <div>RSI: <span className="text-zinc-300">{ta.rsi.toFixed(1)}</span></div>
+   601→                      <div>Price: <span className="text-zinc-300 font-mono">{formatPrice(ta.price)}</span></div>
+   602→                      <div>EMA20: <span className="text-amber-400 font-mono">{formatPrice(ta.ema20)}</span></div>
+   603→                      <div>EMA50: <span className="text-blue-400 font-mono">{formatPrice(ta.ema50)}</span></div>
+   604→                      <div>EMA200: <span className="text-purple-400 font-mono">{formatPrice(ta.ema200)}</span></div>
+   605→                      <div>MACD: <span className={ta.macd.histogram > 0 ? 'text-emerald-400' : 'text-red-400'}>
+   606→                        {ta.macd.histogram > 0 ? '+' : ''}{ta.macd.histogram.toFixed(4)}
+   607→                      </span></div>
+   608→                      <div>Vol vs Avg: <span className="text-zinc-300">{ta.volumeTrend}</span></div>
+   609→                      <div>BB Squeeze: <span className={ta.bollinger.squeeze ? 'text-yellow-400' : 'text-zinc-500'}>
+   610→                        {ta.bollinger.squeeze ? 'YES' : 'NO'}
+   611→                      </span></div>
+   612→                    </div>
+   613→                    {ta.candlestickPattern && (
+   614→                      <div className="mt-2 pt-2 border-t border-zinc-800">
+   615→                        Last pattern: <Badge variant="outline">{ta.candlestickPattern}</Badge>
+   616→                      </div>
+   617→                    )}
+   618→                    <div className="mt-2 pt-2 border-t border-zinc-800">
+   619→                      <div className="text-zinc-500 mb-1">Key Levels:</div>
+   620→                      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+   621→                        <div>Supports: <span className="text-emerald-400 font-mono">
+   622→                          {ta.keySupport.map(s => formatPrice(s)).join(', ')}
+   623→                        </span></div>
+   624→                        <div>Resistances: <span className="text-red-400 font-mono">
+   625→                          {ta.keyResistance.map(r => formatPrice(r)).join(', ')}
+   626→                        </span></div>
+   627→                      </div>
+   628→                    </div>
+   629→                  </CardContent>
+   630→                </Card>
+   631→              )
+   632→            })}
+   633→
+   634→            {/* Fibonacci */}
+   635→            <Card className="bg-zinc-900/50 border-zinc-800">
+   636→              <CardHeader className="pb-2">
+   637→                <CardTitle className="text-sm">📐 Fibonacci Levels</CardTitle>
+   638→              </CardHeader>
+   639→              <CardContent className="text-xs">
+   640→                <div className="grid grid-cols-2 gap-2">
+   641→                  <div>
+   642→                    <div className="text-zinc-500 mb-1">Retracement</div>
+   643→                    {Object.entries(result.setup.fibonacci.levels).map(([k, v]) => (
+   644→                      <div key={k} className="font-mono">
+   645→                        <span className="text-zinc-500">{k}:</span> <span className="text-zinc-300">{formatPrice(v)}</span>
+   646→                      </div>
+   647→                    ))}
+   648→                  </div>
+   649→                  <div>
+   650→                    <div className="text-zinc-500 mb-1">Extension (TP targets)</div>
+   651→                    {Object.entries(result.setup.fibonacci.extensions).map(([k, v]) => (
+   652→                      <div key={k} className="font-mono">
+   653→                        <span className="text-zinc-500">{k}:</span> <span className="text-emerald-400">{formatPrice(v)}</span>
+   654→                      </div>
+   655→                    ))}
+   656→                  </div>
+   657→                </div>
+   658→              </CardContent>
+   659→            </Card>
+   660→          </TabsContent>
+   661→
+   662→          {/* CHART TAB */}
+   663→          <TabsContent value="chart" className="mt-2">
+   664→            <Card className="bg-zinc-900/50 border-zinc-800">
+   665→              <CardContent className="p-2">
+   666→                <CandlestickChart
+   667→                  candles={result.candles4H}
+   668→                  symbol={symbol}
+   669→                  height={400}
+   670→                  showFib
+   671→                  fibLevels={{ swingLow: result.setup.fibonacci.swingLow, swingHigh: result.setup.fibonacci.swingHigh }}
+   672→                  entry={(result.setup.entry.zone.lower + result.setup.entry.zone.upper) / 2}
+   673→                  stopLoss={result.setup.stopLoss.price}
+   674→                  takeProfits={[
+   675→                    result.setup.takeProfits.tp1.price,
+   676→                    result.setup.takeProfits.tp2.price,
+   677→                    result.setup.takeProfits.tp3.price,
+   678→                  ]}
+   679→                />
+   680→                <div className="text-xs text-zinc-500 mt-2 px-2">
+   681→                  Showing 4H chart with Fibonacci levels, entry zone, stop loss, and take profit targets.
+   682→                </div>
+   683→              </CardContent>
+   684→            </Card>
+   685→          </TabsContent>
+   686→
+   687→          {/* CHECKLIST TAB */}
+   688→          <TabsContent value="checklist" className="space-y-3 mt-2">
+   689→            <Card className="bg-zinc-900/50 border-zinc-800">
+   690→              <CardHeader className="pb-2">
+   691→                <CardTitle className="text-sm">Pre-Trade Checklist (Layer 5)</CardTitle>
+   692→              </CardHeader>
+   693→              <CardContent className="space-y-2">
+   694→                {checklist.map((item, i) => (
+   695→                  <div key={i} className="flex items-start gap-2 p-2 rounded hover:bg-zinc-800/50">
+   696→                    <Checkbox
+   697→                      checked={item.checked}
+   698→                      onCheckedChange={() => toggleChecklist(i)}
+   699→                      className="mt-0.5"
+   700→                    />
+   701→                    <div className="flex-1 text-xs">
+   702→                      <div className="flex items-center gap-1">
+   703→                        {item.checked ? 
+   704→                          <CheckCircle2 className="h-3 w-3 text-emerald-400" /> : 
+   705→                          <XCircle className="h-3 w-3 text-zinc-600" />
+   706→                        }
+   707→                        <span className={item.checked ? 'text-emerald-300 line-through' : 'text-zinc-300'}>
+   708→                          {item.item}
+   709→                        </span>
+   710→                      </div>
+   711→                    </div>
+   712→                    {item.required && (
+   713→                      <Badge variant="outline" className="text-[9px] border-red-500/50 text-red-400">
+   714→                        REQUIRED
+   715→                      </Badge>
+   716→                    )}
+   717→                  </div>
+   718→                ))}
+   719→                <div className="mt-3 pt-3 border-t border-zinc-800">
+   720→                  <div className="text-xs text-zinc-400">
+   721→                    Required: {checklist.filter(c => c.required && c.checked).length}/{checklist.filter(c => c.required).length}
+   722→                  </div>
+   723→                  <div className="text-xs text-zinc-400">
+   724→                    Optional: {checklist.filter(c => !c.required && c.checked).length}/{checklist.filter(c => !c.required).length}
+   725→                  </div>
+   726→                </div>
+   727→              </CardContent>
+   728→            </Card>
+   729→
+   730→            <Button onClick={analyze} variant="outline" className="w-full" size="sm">
+   731→              Re-calculate Score
+   732→            </Button>
+   733→          </TabsContent>
+   734→
+   735→          {/* ALERTS TAB */}
+   736→          <TabsContent value="alerts" className="space-y-2 mt-2">
+   737→            <Card className="bg-zinc-900/50 border-zinc-800">
+   738→              <CardHeader className="pb-2">
+   739→                <CardTitle className="text-sm">🔔 Alert Configuration</CardTitle>
+   740→              </CardHeader>
+   741→              <CardContent className="space-y-2">
+   742→                {result.setup.alerts.map(a => (
+   743→                  <div key={a.id} className="flex items-start gap-2 p-2 rounded border border-zinc-800">
+   744→                    <Badge variant={
+   745→                      a.type === 'CRITICAL' ? 'destructive' :
+   746→                      a.type === 'WARNING' ? 'default' :
+   747→                      a.type === 'ACTION' ? 'default' : 'secondary'
+   748→                    } className={`text-[9px] ${a.type === 'ACTION' ? 'bg-blue-600' : ''}`}>
+   749→                      {a.type}
+   750→                    </Badge>
+   751→                    <span className="text-xs text-zinc-300 flex-1">{a.condition}</span>
+   752→                  </div>
+   753→                ))}
+   754→              </CardContent>
+   755→            </Card>
+   756→          </TabsContent>
+   757→        </Tabs>
+   758→      )}
+   759→
+   760→      {/* Active Setups List */}
+   761→      {setups.length > 0 && (
+   762→        <Card className="bg-zinc-900/50 border-zinc-800">
+   763→          <CardHeader className="pb-2">
+   764→            <CardTitle className="text-sm">Saved Setups ({setups.length})</CardTitle>
+   765→          </CardHeader>
+   766→          <CardContent>
+   767→            <ScrollArea className="h-64">
+   768→              <div className="space-y-2">
+   769→                {setups.map(s => (
+   770→                  <div key={s.id} className="flex items-center justify-between p-2 rounded border border-zinc-800 text-xs">
+   771→                    <div>
+   772→                      <div className="font-medium">
+   773→                        {s.symbol} <Badge variant={s.bias === 'LONG' ? 'default' : 'destructive'} className="ml-1 text-[9px]">
+   774→                          {s.bias}
+   775→                        </Badge>
+   776→                      </div>
+   777→                      <div className="text-zinc-500">{new Date(s.createdAt).toLocaleString('id-ID')}</div>
+   778→                    </div>
+   779→                    <div className="text-right">
+   780→                      <div className="font-mono">{s.confidence.toFixed(0)}/100</div>
+   781→                      <div className="text-zinc-500">1:{s.rrAverage.toFixed(1)}</div>
+   782→                    </div>
+   783→                  </div>
+   784→                ))}
+   785→              </div>
+   786→            </ScrollArea>
+   787→          </CardContent>
+   788→        </Card>
+   789→      )}
+   790→    </div>
+   791→  )
+   792→}
+   793→
+   794→function LayerScoreCard({ label, score, notes }: { label: string; score: number; notes: string[] }) {
+   795→  const color = score >= 70 ? 'text-emerald-400' : score >= 50 ? 'text-yellow-400' : 'text-red-400'
+   796→  return (
+   797→    <div className="bg-zinc-950/50 p-2 rounded">
+   798→      <div className="flex items-center justify-between">
+   799→        <span className="text-zinc-500">{label}</span>
+   800→        <span className={`font-mono ${color}`}>{score.toFixed(0)}</span>
+   801→      </div>
+   802→      <div className="text-[9px] text-zinc-600 mt-0.5 truncate" title={notes.join('; ')}>
+   803→        {notes[0] || '—'}
+   804→      </div>
+   805→    </div>
+   806→  )
+   807→}
+   808→

@@ -184,7 +184,7 @@ export function SetupFinder() {
       }
 
       const entryMid = (entryZone.lower + entryZone.upper) / 2
-      const risk = Math.abs(entryMid - stopLoss)
+      const risk = Math.abs(entryMid - stopLoss) || 0.0001  // Guard against zero
       const tp1Rr = Math.abs(tps.tp1 - entryMid) / risk
       const tp2Rr = Math.abs(tps.tp2 - entryMid) / risk
       const tp3Rr = Math.abs(tps.tp3 - entryMid) / risk

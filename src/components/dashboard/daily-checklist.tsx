@@ -63,9 +63,16 @@ export function DailyChecklist() {
     // "First Friday" pattern
     if (timeStr.includes('First Friday')) {
       const target = new Date(now.getFullYear(), now.getMonth(), 1)
+      // Find first Friday of current month
       while (target.getDay() !== 5) target.setDate(target.getDate() + 1)
       target.setHours(20, 30, 0, 0)
-      if (target < now) target.setMonth(target.getMonth() + 1)
+      // If already passed, go to next month and find first Friday again
+      if (target < now) {
+        target.setMonth(target.getMonth() + 1)
+        target.setDate(1)
+        while (target.getDay() !== 5) target.setDate(target.getDate() + 1)
+        target.setHours(20, 30, 0, 0)
+      }
       const hoursUntil = (target.getTime() - now.getTime()) / (1000 * 60 * 60)
       return categorizeHours(hoursUntil)
     }

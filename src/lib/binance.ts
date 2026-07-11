@@ -130,9 +130,18 @@ export async function getOpenInterest(symbol: string): Promise<{ openInterest: n
     const res = await fetch(url)
     if (!res.ok) return null
     const data = await res.json()
+    const oi = parseFloat(data.openInterest)
+    // Get current price to compute USD value
+    const priceRes = await fetch(`/api/proxy/binance?path=ticker/price&symbol=${symbol}`)
+    let usdValue = 0
+    if (priceRes.ok) {
+      const priceData = await priceRes.json()
+      const price = parseFloat(priceData.price)
+      usdValue = oi * price
+    }
     return {
-      openInterest: parseFloat(data.openInterest),
-      openInterestValue: 0,
+      openInterest: oi,
+      openInterestValue: usdValue,
     }
   } catch {
     return null

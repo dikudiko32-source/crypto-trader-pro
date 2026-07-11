@@ -1,0 +1,953 @@
+     1→'use client'
+     2→
+     3→import { useEffect, useState, useRef, useCallback } from 'react'
+     4→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+     5→import { Badge } from '@/components/ui/badge'
+     6→import { Button } from '@/components/ui/button'
+     7→import { Input } from '@/components/ui/input'
+     8→import { Label } from '@/components/ui/label'
+     9→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+    10→import { Checkbox } from '@/components/ui/checkbox'
+    11→import { Switch } from '@/components/ui/switch'
+    12→import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+    13→import { ScrollArea } from '@/components/ui/scroll-area'
+    14→import { Separator } from '@/components/ui/separator'
+    15→import { 
+    16→  Loader2, Search, Zap, Bell, MessageCircle, Send, Mail, 
+    17→  Smartphone, TrendingUp, TrendingDown, Activity, Clock,
+    18→  CheckCircle2, AlertTriangle, Settings as SettingsIcon
+    19→} from 'lucide-react'
+    20→import { useAppStore, formatNumber, formatIDR } from '@/store/app-store'
+    21→import { scanMultipleCoinsEnhanced, formatEnhancedAlertMessage, formatAlertMessage, formatWhatsAppMessage } from '@/lib/scanner'
+    22→import { formatDeepAlertMessage } from '@/lib/deep-analysis'
+    23→import { useNotifications } from '@/hooks/use-price-alerts'
+    24→import type { ScannerResult, ScannerSignal, DeepAnalysisResult, EnhancedScannerResult, EnhancedScanSummary, ScanTimeframe } from '@/lib/types'
+    25→
+    26→const STYLE_OPTIONS = [
+    27→  { value: 'TREND_FOLLOWING' as const, label: 'Trend Following', desc: 'Donchian + ATR + ADX' },
+    28→  { value: 'MEAN_REVERSION' as const, label: 'Mean Reversion', desc: 'Bollinger + RSI' },
+    29→  { value: 'VOLUME_BREAKOUT' as const, label: 'Volume Breakout', desc: 'S/R + Volume + VWAP' },
+    30→  { value: 'SMART_MONEY' as const, label: 'Smart Money', desc: 'OB + FVG + BOS' },
+    31→]
+    32→
+    33→export function AutoScanner() {
+    34→  const { 
+    35→    scannerConfig, updateScannerConfig, 
+    36→    lastScanSummary, setLastScanSummary,
+    37→    scheduledScan, updateScheduledScan,
+    38→    notificationChannels, updateNotificationChannels,
+    39→    settings, updateSettings,
+    40→    pushAlert,
+    41→  } = useAppStore()
+    42→  
+    43→  const { notificationsEnabled, showNotification } = useNotifications()
+    44→  const [scanning, setScanning] = useState(false)
+    45→  const [progress, setProgress] = useState({ scanned: 0, total: 0, found: 0 })
+    46→  // Read from store (persisted) instead of separate localStorage
+    47→  const [telegramBotToken, setTelegramBotToken] = useState(settings.telegramBotToken || '')
+    48→  const [telegramChatId, setTelegramChatId] = useState(settings.telegramChatId || '')
+    49→  const [whatsappPhone, setWhatsappPhone] = useState('')
+    50→  const [emailAddress, setEmailAddress] = useState('')
+    51→  const [showSetup, setShowSetup] = useState(false)
+    52→  const scheduleRef = useRef<ReturnType<typeof setInterval> | null>(null)
+    53→
+    54→  // Sync local state if settings change (e.g., user updates in Telegram tab)
+    55→  useEffect(() => {
+    56→    setTelegramBotToken(settings.telegramBotToken || '')
+    57→    setTelegramChatId(settings.telegramChatId || '')
+    58→  }, [settings.telegramBotToken, settings.telegramChatId])
+    59→
+    60→  // Save telegram token to store when user types in Scanner
+    61→  function saveTelegramToken() {
+    62→    updateSettings({ 
+    63→      telegramBotToken: telegramBotToken || null,
+    64→      telegramChatId: telegramChatId || null,
+    65→    })
+    66→  }
+    67→
+    68→  // ---- Run scan (ENHANCED Phase 6) ----
+    69→  const runScan = useCallback(async () => {
+    70→    setScanning(true)
+    71→    setProgress({ scanned: 0, total: 0, found: 0 })
+    72→    
+    73→    try {
+    74→      // MTF config (all 7 timeframes)
+    75→      const mtfConfig = {
+    76→        timeframes: ['5m', '15m', '30m', '1H', '4H', '12H', '1D'] as ScanTimeframe[],
+    77→        htfTimeframe: '1D' as ScanTimeframe,
+    78→        ltfTimeframe: '1H' as ScanTimeframe,
+    79→        requireHTFAlignment: false,
+    80→        requireMTFAgreement: 4,
+    81→      }
+    82→      
+    83→      const summary = await scanMultipleCoinsEnhanced(
+    84→        scannerConfig,
+    85→        mtfConfig,
+    86→        settings.capital,
+    87→        settings.riskPerTrade,
+    88→        (scanned, total, found) => {
+    89→          setProgress({ scanned, total, found })
+    90→        }
+    91→      )
+    92→      
+    93→      setLastScanSummary(summary)
+    94→      updateScheduledScan({
+    95→        lastScanAt: summary.scannedAt,
+    96→        totalScansRun: scheduledScan.totalScansRun + 1,
+    97→      })
+    98→      
+    99→      pushAlert({
+   100→        type: 'INFO',
+   101→        title: '🔍 Enhanced Scan Complete',
+   102→        message: `${summary.totalScanned} coins scanned, ${summary.totalWithSignals} setups found (${summary.longSignals}L / ${summary.shortSignals}S) | Market: ${summary.marketRiskLevel} | Mode: ${summary.tradingMode}`,
+   103→      })
+   104→      
+   105→      // Send notifications for top picks
+   106→      if (summary.topPicks.length > 0) {
+   107→        await sendNotifications(summary.topPicks.slice(0, 3))
+   108→      }
+   109→    } catch (err) {
+   110→      console.error('Scan failed:', err)
+   111→      pushAlert({
+   112→        type: 'CRITICAL',
+   113→        title: 'Scan Failed',
+   114→        message: err instanceof Error ? err.message : 'Unknown error',
+   115→      })
+   116→    } finally {
+   117→      setScanning(false)
+   118→    }
+   119→  }, [scannerConfig, scheduledScan, pushAlert, setLastScanSummary, updateScheduledScan, settings])
+   120→
+   121→  // ---- Send notifications ----
+   122→  // Logic:
+   123→  // - Telegram: ONLY for setups that passed deep analysis (6-layer validated) + smart recommendation BUY/STRONG_BUY
+   124→  // - Browser Push: for all setups with confidence > threshold (broader)
+   125→  // - WhatsApp/Email: for deep-passed only (semi-manual)
+   126→  async function sendNotifications(picks: EnhancedScannerResult[]) {
+   127→    let alertsSent = 0
+   128→    let telegramSent = 0
+   129→    let browserPushSent = 0
+   130→    
+   131→    for (const pick of picks) {
+   132→      const deep = pick.deepAnalysis
+   133→      const rec = pick.smartRecommendation
+   134→      const isDeepPassed = deep?.passedDeepAnalysis === true
+   135→      const isStrongConfluence = deep?.confluence === 'STRONG' || deep?.confluence === 'MEGA'
+   136→      const isRecommended = rec?.finalRecommendation === 'STRONG_BUY' || rec?.finalRecommendation === 'BUY'
+   137→      
+   138→      // Telegram: ONLY for deep-passed + recommended (Phase 6: also check smart recommendation)
+   139→      if (scannerConfig.notifyTelegram && telegramBotToken && telegramChatId && isDeepPassed && isRecommended) {
+   140→        try {
+   141→          // Use enhanced alert format (ultra detailed) if available
+   142→          const message = rec && pick.mtfAnalysis && pick.eventIntelligence
+   143→            ? formatEnhancedAlertMessage(pick)
+   144→            : deep 
+   145→            ? formatDeepAlertMessage(pick, deep, await getScanMacroData())
+   146→            : formatAlertMessage(pick)
+   147→          
+   148→          const res = await fetch('/api/telegram/send', {
+   149→            method: 'POST',
+   150→            headers: { 'Content-Type': 'application/json' },
+   151→            body: JSON.stringify({
+   152→              botToken: telegramBotToken,
+   153→              chatId: telegramChatId,
+   154→              message,
+   155→            }),
+   156→          })
+   157→          if (res.ok) {
+   158→            alertsSent++
+   159→            telegramSent++
+   160→            console.log(`Telegram alert sent for ${pick.symbol} (score ${rec?.finalScore.toFixed(0)}, rec ${rec?.finalRecommendation})`)
+   161→          }
+   162→        } catch (err) {
+   163→          console.error('Telegram send failed:', err)
+   164→        }
+   165→      }
+   166→      
+   167→      // Browser Push: for ALL setups with confidence > threshold (broader)
+   168→      if (scannerConfig.notifyBrowserPush && notificationsEnabled) {
+   169→        let title = `🔔 ${pick.name} ${pick.bestSignal!.bias} Signal`
+   170→        let body = `${pick.bestSignal!.styleName} • Confidence ${pick.bestSignal!.confidence.toFixed(0)}%`
+   171→        
+   172→        if (rec?.finalRecommendation === 'STRONG_BUY') {
+   173→          title = `⭐ ${pick.name} ${pick.bestSignal!.bias} — STRONG BUY!`
+   174→          body = `${rec.tradeTypeLabel} • Score ${rec.finalScore.toFixed(0)}/100 • Hold: ${rec.estimatedHoldTime}`
+   175→        } else if (rec?.finalRecommendation === 'AVOID') {
+   176→          title = `⚠️ ${pick.name} — AVOID (event/conflict)`
+   177→          body = `${rec.recommendationReason}`
+   178→        } else if (isDeepPassed) {
+   179→          title = `✅ ${pick.name} ${pick.bestSignal!.bias} — 6-Layer Validated`
+   180→          body = `${pick.bestSignal!.styleName} • Score ${deep?.totalLayerScore.toFixed(0)}/100`
+   181→        } else if (isStrongConfluence) {
+   182→          title = `🔥 ${pick.name} ${pick.bestSignal!.bias} — Strong Confluence`
+   183→          body = `${pick.bestSignal!.styleName} • Confluence: ${deep?.confluence}`
+   184→        }
+   185→        
+   186→        showNotification(title, body, pick.symbol)
+   187→        alertsSent++
+   188→        browserPushSent++
+   189→      }
+   190→      
+   191→      // WhatsApp (semi-auto): for deep-passed + recommended only
+   192→      if (scannerConfig.notifyWhatsApp && whatsappPhone && isDeepPassed && isRecommended) {
+   193→        const waMessage = formatWhatsAppMessage(pick)
+   194→        const waUrl = `https://wa.me/${whatsappPhone}?text=${encodeURIComponent(waMessage)}`
+   195→        window.open(waUrl, '_blank')
+   196→        alertsSent++
+   197→      }
+   198→      
+   199→      // Email (semi-auto): for deep-passed + recommended only
+   200→      if (scannerConfig.notifyEmail && emailAddress && isDeepPassed && isRecommended) {
+   201→        const subject = `🚨 ${pick.name} ${pick.bestSignal!.bias} — ${rec?.finalRecommendation || 'Signal'}`
+   202→        const body = formatWhatsAppMessage(pick)
+   203→        const mailtoUrl = `mailto:${emailAddress}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+   204→        window.open(mailtoUrl, '_blank')
+   205→        alertsSent++
+   206→      }
+   207→    }
+   208→    
+   209→    if (alertsSent > 0) {
+   210→      updateScheduledScan({
+   211→        totalAlertsSent: scheduledScan.totalAlertsSent + alertsSent,
+   212→      })
+   213→      pushAlert({
+   214→        type: 'INFO',
+   215→        title: '📊 Notification Summary',
+   216→        message: `${telegramSent} Telegram (deep+recommended) + ${browserPushSent} Browser Push (all candidates)`,
+   217→      })
+   218→    }
+   219→  }
+   220→
+   221→  // Helper to get macro data (cached in component)
+   222→  const [cachedMacro, setCachedMacro] = useState<{ fearGreed: number; fearGreedLabel: string } | null>(null)
+   223→  async function getScanMacroData() {
+   224→    if (cachedMacro) return cachedMacro
+   225→    try {
+   226→      const { getFearGreedIndex } = await import('@/lib/macro')
+   227→      const fg = await getFearGreedIndex()
+   228→      const data = { fearGreed: fg?.value || 50, fearGreedLabel: fg?.classification || 'Neutral' }
+   229→      setCachedMacro(data)
+   230→      return data
+   231→    } catch {
+   232→      return { fearGreed: 50, fearGreedLabel: 'Neutral' }
+   233→    }
+   234→  }
+   235→
+   236→  // ---- Auto-schedule ----
+   237→  useEffect(() => {
+   238→    if (scheduleRef.current) {
+   239→      clearInterval(scheduleRef.current)
+   240→      scheduleRef.current = null
+   241→    }
+   242→    
+   243→    if (scannerConfig.autoScheduleHours > 0) {
+   244→      const intervalMs = scannerConfig.autoScheduleHours * 3600 * 1000
+   245→      updateScheduledScan({
+   246→        enabled: true,
+   247→        intervalHours: scannerConfig.autoScheduleHours,
+   248→        nextScanAt: new Date(Date.now() + intervalMs).toISOString(),
+   249→      })
+   250→      
+   251→      scheduleRef.current = setInterval(() => {
+   252→        console.log('Auto-scan triggered')
+   253→        runScan()
+   254→      }, intervalMs)
+   255→    } else {
+   256→      updateScheduledScan({
+   257→        enabled: false,
+   258→        intervalHours: 0,
+   259→        nextScanAt: null,
+   260→      })
+   261→    }
+   262→    
+   263→    return () => {
+   264→      if (scheduleRef.current) clearInterval(scheduleRef.current)
+   265→    }
+   266→  }, [scannerConfig.autoScheduleHours])
+   267→
+   268→  const toggleStyle = (style: typeof STYLE_OPTIONS[number]['value']) => {
+   269→    const current = scannerConfig.styles
+   270→    if (current.includes(style)) {
+   271→      updateScannerConfig({ styles: current.filter(s => s !== style) })
+   272→    } else {
+   273→      updateScannerConfig({ styles: [...current, style] })
+   274→    }
+   275→  }
+   276→
+   277→  const fmt = (n: number) => n < 1 ? n.toFixed(5) : n < 100 ? n.toFixed(3) : n.toFixed(2)
+   278→  const progressPct = progress.total > 0 ? (progress.scanned / progress.total) * 100 : 0
+   279→
+   280→  return (
+   281→    <div className="space-y-3">
+   282→      {/* Warning */}
+   283→      <Alert className="border-yellow-800 bg-yellow-950/30">
+   284→        <AlertTriangle className="h-4 w-4 text-yellow-400" />
+   285→        <AlertTitle className="text-xs text-yellow-300">⚠️ Hybrid Scanner (6-Layer Validation)</AlertTitle>
+   286→        <AlertDescription className="text-xs text-yellow-200 space-y-1">
+   287→          <div><strong>Phase 1 (Fast):</strong> Scan 30 pairs × 4 styles → get all candidates (~1-2 min)</div>
+   288→          <div><strong>Phase 2 (Deep):</strong> Top 5 candidates → run Layer 1 (Macro) + Layer 3 (Fundamental) + Layer 5 (Checklist)</div>
+   289→          <div><strong>Telegram alerts:</strong> ONLY for 6-layer validated setups (high quality, low spam)</div>
+   290→          <div><strong>Browser push:</strong> For all candidates (broader, you filter manually)</div>
+   291→          <div><strong>Confluence:</strong> 2+ styles agree = STRONG, 3+ = MEGA (highest priority)</div>
+   292→        </AlertDescription>
+   293→      </Alert>
+   294→
+   295→      {/* Notification Channels Setup */}
+   296→      <Card className="bg-zinc-900/50 border-zinc-800">
+   297→        <CardHeader className="pb-2">
+   298→          <div className="flex items-center justify-between">
+   299→            <CardTitle className="text-sm flex items-center gap-2">
+   300→              <Bell className="h-4 w-4" />
+   301→              Notification Channels
+   302→            </CardTitle>
+   303→            <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setShowSetup(!showSetup)}>
+   304→              <SettingsIcon className="h-3 w-3 mr-1" />
+   305→              {showSetup ? 'Hide' : 'Setup'}
+   306→            </Button>
+   307→          </div>
+   308→        </CardHeader>
+   309→        <CardContent className="space-y-2">
+   310→          <div className="grid grid-cols-2 gap-2 text-xs">
+   311→            <label className="flex items-center gap-2 p-2 rounded border border-zinc-800">
+   312→              <Checkbox
+   313→                checked={scannerConfig.notifyTelegram}
+   314→                onCheckedChange={(v) => updateScannerConfig({ notifyTelegram: v === true })}
+   315→              />
+   316→              <Send className="h-3 w-3 text-blue-400" />
+   317→              <span>Telegram</span>
+   318→            </label>
+   319→            <label className="flex items-center gap-2 p-2 rounded border border-zinc-800">
+   320→              <Checkbox
+   321→                checked={scannerConfig.notifyBrowserPush}
+   322→                onCheckedChange={(v) => updateScannerConfig({ notifyBrowserPush: v === true })}
+   323→              />
+   324→              <Bell className="h-3 w-3 text-emerald-400" />
+   325→              <span>Browser Push</span>
+   326→            </label>
+   327→            <label className="flex items-center gap-2 p-2 rounded border border-zinc-800">
+   328→              <Checkbox
+   329→                checked={scannerConfig.notifyWhatsApp}
+   330→                onCheckedChange={(v) => updateScannerConfig({ notifyWhatsApp: v === true })}
+   331→              />
+   332→              <MessageCircle className="h-3 w-3 text-emerald-500" />
+   333→              <span>WhatsApp (link)</span>
+   334→            </label>
+   335→            <label className="flex items-center gap-2 p-2 rounded border border-zinc-800">
+   336→              <Checkbox
+   337→                checked={scannerConfig.notifyEmail}
+   338→                onCheckedChange={(v) => updateScannerConfig({ notifyEmail: v === true })}
+   339→              />
+   340→              <Mail className="h-3 w-3 text-orange-400" />
+   341→              <span>Email (link)</span>
+   342→            </label>
+   343→          </div>
+   344→
+   345→          {showSetup && (
+   346→            <div className="mt-3 pt-3 border-t border-zinc-800 space-y-2">
+   347→              {scannerConfig.notifyTelegram && (
+   348→                <div className="space-y-1">
+   349→                  <Label className="text-xs">Telegram Bot Token</Label>
+   350→                  <Input
+   351→                    type="password"
+   352→                    value={telegramBotToken}
+   353→                    onChange={(e) => setTelegramBotToken(e.target.value)}
+   354→                    onBlur={saveTelegramToken}
+   355→                    placeholder="123456789:ABCdef..."
+   356→                    className="bg-zinc-950 border-zinc-700 text-xs font-mono"
+   357→                  />
+   358→                  <Label className="text-xs">Telegram Chat ID</Label>
+   359→                  <Input
+   360→                    value={telegramChatId}
+   361→                    onChange={(e) => setTelegramChatId(e.target.value)}
+   362→                    onBlur={saveTelegramToken}
+   363→                    placeholder="123456789"
+   364→                    className="bg-zinc-950 border-zinc-700 text-xs font-mono"
+   365→                  />
+   366→                  <div className="text-[10px] text-zinc-500">
+   367→                    Setup guide ada di tab "Telegram"
+   368→                  </div>
+   369→                </div>
+   370→              )}
+   371→              {scannerConfig.notifyWhatsApp && (
+   372→                <div className="space-y-1">
+   373→                  <Label className="text-xs">WhatsApp Number (intl format, no +)</Label>
+   374→                  <Input
+   375→                    value={whatsappPhone}
+   376→                    onChange={(e) => setWhatsappPhone(e.target.value)}
+   377→                    placeholder="6281234567890"
+   378→                    className="bg-zinc-950 border-zinc-700 text-xs font-mono"
+   379→                  />
+   380→                  <div className="text-[10px] text-zinc-500">
+   381→                    ⚠️ Pakai wa.me link — Anda klik untuk kirim manual (WhatsApp tidak bisa auto gratis)
+   382→                  </div>
+   383→                </div>
+   384→              )}
+   385→              {scannerConfig.notifyEmail && (
+   386→                <div className="space-y-1">
+   387→                  <Label className="text-xs">Email Address</Label>
+   388→                  <Input
+   389→                    type="email"
+   390→                    value={emailAddress}
+   391→                    onChange={(e) => setEmailAddress(e.target.value)}
+   392→                    placeholder="anda@email.com"
+   393→                    className="bg-zinc-950 border-zinc-700 text-xs"
+   394→                  />
+   395→                  <div className="text-[10px] text-zinc-500">
+   396→                    ⚠️ Pakai mailto link — email app terbuka, Anda klik send manual
+   397→                  </div>
+   398→                </div>
+   399→              )}
+   400→            </div>
+   401→          )}
+   402→        </CardContent>
+   403→      </Card>
+   404→
+   405→      {/* Scanner Config */}
+   406→      <Card className="bg-zinc-900/50 border-zinc-800">
+   407→        <CardHeader className="pb-2">
+   408→          <CardTitle className="text-sm flex items-center gap-2">
+   409→            <Search className="h-4 w-4" />
+   410→            Scanner Configuration
+   411→          </CardTitle>
+   412→        </CardHeader>
+   413→        <CardContent className="space-y-3">
+   414→          <div className="grid grid-cols-2 gap-2">
+   415→            <div>
+   416→              <Label className="text-xs">Top Pairs</Label>
+   417→              <Select 
+   418→                value={String(scannerConfig.topPairsLimit)} 
+   419→                onValueChange={(v) => updateScannerConfig({ topPairsLimit: parseInt(v) })}
+   420→              >
+   421→                <SelectTrigger className="bg-zinc-950 border-zinc-700"><SelectValue /></SelectTrigger>
+   422→                <SelectContent>
+   423→                  <SelectItem value="10">10 pairs</SelectItem>
+   424→                  <SelectItem value="20">20 pairs</SelectItem>
+   425→                  <SelectItem value="30">30 pairs (recommended)</SelectItem>
+   426→                  <SelectItem value="50">50 pairs (slow)</SelectItem>
+   427→                  <SelectItem value="100">100 pairs (very slow)</SelectItem>
+   428→                </SelectContent>
+   429→              </Select>
+   430→            </div>
+   431→            <div>
+   432→              <Label className="text-xs">Min Confidence</Label>
+   433→              <Select 
+   434→                value={String(scannerConfig.minConfidence)} 
+   435→                onValueChange={(v) => updateScannerConfig({ minConfidence: parseInt(v) })}
+   436→              >
+   437→                <SelectTrigger className="bg-zinc-950 border-zinc-700"><SelectValue /></SelectTrigger>
+   438→                <SelectContent>
+   439→                  <SelectItem value="50">50% (loose)</SelectItem>
+   440→                  <SelectItem value="60">60% (medium)</SelectItem>
+   441→                  <SelectItem value="65">65% (recommended)</SelectItem>
+   442→                  <SelectItem value="75">75% (strict)</SelectItem>
+   443→                  <SelectItem value="85">85% (very strict)</SelectItem>
+   444→                </SelectContent>
+   445→              </Select>
+   446→            </div>
+   447→          </div>
+   448→
+   449→          <div>
+   450→            <Label className="text-xs">Min 24h Volume (USD)</Label>
+   451→            <Input
+   452→              type="number"
+   453→              value={scannerConfig.minVolume24h}
+   454→              onChange={(e) => updateScannerConfig({ minVolume24h: parseFloat(e.target.value) || 0 })}
+   455→              step="1000000"
+   456→              className="bg-zinc-950 border-zinc-700 text-sm"
+   457→            />
+   458→            <div className="text-[10px] text-zinc-500 mt-1">
+   459→              Default: $10M (filter low-liquidity coins)
+   460→            </div>
+   461→          </div>
+   462→
+   463→          <div>
+   464→            <Label className="text-xs">Trading Styles to Scan</Label>
+   465→            <div className="grid grid-cols-2 gap-1 mt-1">
+   466→              {STYLE_OPTIONS.map(s => (
+   467→                <label key={s.value} className="flex items-start gap-2 p-2 rounded border border-zinc-800 text-xs cursor-pointer">
+   468→                  <Checkbox
+   469→                    checked={scannerConfig.styles.includes(s.value)}
+   470→                    onCheckedChange={() => toggleStyle(s.value)}
+   471→                    className="mt-0.5"
+   472→                  />
+   473→                  <div>
+   474→                    <div className="font-medium">{s.label}</div>
+   475→                    <div className="text-[10px] text-zinc-500">{s.desc}</div>
+   476→                  </div>
+   477→                </label>
+   478→              ))}
+   479→            </div>
+   480→          </div>
+   481→
+   482→          <div>
+   483→            <Label className="text-xs">Auto-Schedule (background scan)</Label>
+   484→            <Select 
+   485→              value={String(scannerConfig.autoScheduleHours)} 
+   486→              onValueChange={(v) => updateScannerConfig({ autoScheduleHours: parseInt(v) })}
+   487→            >
+   488→              <SelectTrigger className="bg-zinc-950 border-zinc-700"><SelectValue /></SelectTrigger>
+   489→              <SelectContent>
+   490→                <SelectItem value="0">Manual only</SelectItem>
+   491→                <SelectItem value="1">Every 1 hour</SelectItem>
+   492→                <SelectItem value="4">Every 4 hours</SelectItem>
+   493→                <SelectItem value="12">Every 12 hours</SelectItem>
+   494→                <SelectItem value="24">Every 24 hours</SelectItem>
+   495→              </SelectContent>
+   496→            </Select>
+   497→            <div className="text-[10px] text-zinc-500 mt-1">
+   498→              ⚠️ Tab harus tetap terbuka. Close browser = schedule stop.
+   499→            </div>
+   500→          </div>
+   501→        </CardContent>
+   502→      </Card>
+   503→
+   504→      {/* Run Scan Button */}
+   505→      <Button 
+   506→        onClick={runScan} 
+   507→        disabled={scanning}
+   508→        className="w-full"
+   509→        size="lg"
+   510→      >
+   511→        {scanning ? (
+   512→          <>
+   513→            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+   514→            Scanning... {progress.scanned}/{progress.total} ({progress.found} found)
+   515→          </>
+   516→        ) : (
+   517→          <>
+   518→            <Zap className="h-4 w-4 mr-2" />
+   519→            Run Scan Now ({scannerConfig.topPairsLimit} pairs)
+   520→          </>
+   521→        )}
+   522→      </Button>
+   523→
+   524→      {/* Progress bar */}
+   525→      {scanning && progress.total > 0 && (
+   526→        <Card className="bg-zinc-900/50 border-zinc-800">
+   527→          <CardContent className="p-3">
+   528→            <div className="text-xs text-zinc-400 mb-1">Progress: {progressPct.toFixed(0)}%</div>
+   529→            <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+   530→              <div 
+   531→                className="h-full bg-emerald-500 transition-all"
+   532→                style={{ width: `${progressPct}%` }}
+   533→              />
+   534→            </div>
+   535→            <div className="text-[10px] text-zinc-500 mt-1">
+   536→              Found: {progress.found} setups so far
+   537→            </div>
+   538→          </CardContent>
+   539→        </Card>
+   540→      )}
+   541→
+   542→      {/* Last Scan Summary */}
+   543→      {lastScanSummary && !scanning && (
+   544→        <>
+   545→          <Card className="bg-zinc-900/50 border-zinc-800 border-l-4 border-l-emerald-500">
+   546→            <CardHeader className="pb-2">
+   547→              <CardTitle className="text-sm flex items-center gap-2">
+   548→                <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+   549→                Last Scan Summary
+   550→              </CardTitle>
+   551→            </CardHeader>
+   552→            <CardContent className="space-y-2 text-xs">
+   553→              <div className="grid grid-cols-2 gap-2">
+   554→                <div className="bg-zinc-950/50 p-2 rounded">
+   555→                  <div className="text-zinc-500">Scanned</div>
+   556→                  <div className="font-mono font-bold">{lastScanSummary.totalScanned} pairs</div>
+   557→                </div>
+   558→                <div className="bg-zinc-950/50 p-2 rounded">
+   559→                  <div className="text-zinc-500">Setups Found</div>
+   560→                  <div className="font-mono font-bold text-emerald-400">{lastScanSummary.totalWithSignals}</div>
+   561→                </div>
+   562→                <div className="bg-emerald-950/30 p-2 rounded">
+   563→                  <div className="text-zinc-500">Long Signals</div>
+   564→                  <div className="font-mono font-bold text-emerald-400">{lastScanSummary.longSignals}</div>
+   565→                </div>
+   566→                <div className="bg-red-950/30 p-2 rounded">
+   567→                  <div className="text-zinc-500">Short Signals</div>
+   568→                  <div className="font-mono font-bold text-red-400">{lastScanSummary.shortSignals}</div>
+   569→                </div>
+   570→              </div>
+   571→              <div className="flex justify-between text-[10px] text-zinc-500">
+   572→                <span>Duration: {lastScanSummary.duration.toFixed(1)}s</span>
+   573→                <span>{new Date(lastScanSummary.scannedAt).toLocaleString('id-ID')}</span>
+   574→              </div>
+   575→              {lastScanSummary.errors.length > 0 && (
+   576→                <div className="text-[10px] text-yellow-400">
+   577→                  ⚠️ {lastScanSummary.errors.length} errors (some pairs skipped)
+   578→                </div>
+   579→              )}
+   580→            </CardContent>
+   581→          </Card>
+   582→
+   583→          {/* Top Picks */}
+   584→          {lastScanSummary.topPicks.length > 0 && (
+   585→            <Card className="bg-zinc-900/50 border-zinc-800">
+   586→              <CardHeader className="pb-2">
+   587→                <CardTitle className="text-sm flex items-center gap-2">
+   588→                  <TrendingUp className="h-4 w-4" />
+   589→                  Top Picks ({lastScanSummary.topPicks.length})
+   590→                </CardTitle>
+   591→              </CardHeader>
+   592→              <CardContent>
+   593→                <ScrollArea className="h-[500px]">
+   594→                  <div className="space-y-2">
+   595→                    {lastScanSummary.topPicks.map((result, idx) => (
+   596→                      <ScannerResultCard 
+   597→                        key={result.symbol} 
+   598→                        result={result} 
+   599→                        rank={idx + 1}
+   600→                        onNotify={() => sendNotifications([result])}
+   601→                      />
+   602→                    ))}
+   603→                  </div>
+   604→                </ScrollArea>
+   605→              </CardContent>
+   606→            </Card>
+   607→          )}
+   608→        </>
+   609→      )}
+   610→
+   611→      {/* Schedule Status */}
+   612→      {scheduledScan.enabled && (
+   613→        <Card className="bg-blue-950/20 border-blue-800 border-l-4 border-l-blue-500">
+   614→          <CardContent className="p-3">
+   615→            <div className="flex items-center gap-2">
+   616→              <Clock className="h-4 w-4 text-blue-400" />
+   617→              <div className="flex-1">
+   618→                <div className="text-xs font-medium text-blue-300">
+   619→                  Auto-Schedule Active
+   620→                </div>
+   621→                <div className="text-[10px] text-blue-400">
+   622→                  Every {scheduledScan.intervalHours}h • Next: {scheduledScan.nextScanAt ? new Date(scheduledScan.nextScanAt).toLocaleString('id-ID') : 'N/A'}
+   623→                </div>
+   624→              </div>
+   625→              <div className="text-right">
+   626→                <div className="text-[10px] text-zinc-500">Total Scans</div>
+   627→                <div className="text-xs font-bold">{scheduledScan.totalScansRun}</div>
+   628→                <div className="text-[10px] text-zinc-500 mt-1">Alerts Sent</div>
+   629→                <div className="text-xs font-bold text-emerald-400">{scheduledScan.totalAlertsSent}</div>
+   630→              </div>
+   631→            </div>
+   632→          </CardContent>
+   633→        </Card>
+   634→      )}
+   635→
+   636→      {/* Info */}
+   637→      <Card className="bg-zinc-900/30 border-zinc-800/50">
+   638→        <CardContent className="p-3 text-xs space-y-1 text-zinc-500">
+   639→          <div className="font-semibold text-zinc-400 mb-1">Cara Pakai:</div>
+   640→          <div>1. Set notification channels (Telegram recommended)</div>
+   641→          <div>2. Configure scanner (pairs, confidence, styles)</div>
+   642→          <div>3. Klik "Run Scan Now" untuk manual</div>
+   643→          <div>4. Atau set auto-schedule (1h/4h/12h/24h)</div>
+   644→          <div>5. Setups dengan confidence &gt; threshold akan dikirim ke channel aktif</div>
+   645→          <div className="mt-2 pt-2 border-t border-zinc-800">
+   646→            ⚠️ Filter confidence 65%+ untuk hindari alert spam. 50% = terlalu noisy.
+   647→          </div>
+   648→        </CardContent>
+   649→      </Card>
+   650→    </div>
+   651→  )
+   652→}
+   653→
+   654→// ---- Scanner Result Card ----
+   655→function ScannerResultCard({ 
+   656→  result, 
+   657→  rank,
+   658→  onNotify 
+   659→}: { 
+   660→  result: EnhancedScannerResult
+   661→  rank: number
+   662→  onNotify: () => void
+   663→}) {
+   664→  const sig = result.bestSignal!
+   665→  const deep = result.deepAnalysis
+   666→  const mtf = result.mtfAnalysis
+   667→  const events = result.eventIntelligence
+   668→  const rec = result.smartRecommendation
+   669→  const fmt = (n: number) => n < 1 ? n.toFixed(5) : n < 100 ? n.toFixed(3) : n.toFixed(2)
+   670→  
+   671→  // Determine card styling based on recommendation
+   672→  const cardBorder = rec?.finalRecommendation === 'STRONG_BUY' 
+   673→    ? 'border-l-emerald-500 bg-emerald-950/20'
+   674→    : rec?.finalRecommendation === 'AVOID'
+   675→    ? 'border-l-red-500 bg-red-950/20'
+   676→    : deep?.passedDeepAnalysis 
+   677→    ? 'border-l-emerald-500 bg-emerald-950/10'
+   678→    : deep?.confluence === 'MEGA' || deep?.confluence === 'STRONG'
+   679→    ? 'border-l-blue-500'
+   680→    : sig.bias === 'LONG' 
+   681→    ? 'border-l-emerald-500' 
+   682→    : 'border-l-red-500'
+   683→  
+   684→  return (
+   685→    <div className={`p-2 rounded border border-zinc-800 bg-zinc-950/50 border-l-4 ${cardBorder}`}>
+   686→      <div className="flex items-start justify-between mb-2">
+   687→        <div>
+   688→          <div className="flex items-center gap-1 flex-wrap">
+   689→            <span className="text-[10px] text-zinc-500">#{rank}</span>
+   690→            <span className="font-bold text-sm">{result.name}</span>
+   691→            <Badge variant={sig.bias === 'LONG' ? 'default' : 'destructive'} className="text-[9px]">
+   692→              {sig.bias === 'LONG' ? <TrendingUp className="h-2.5 w-2.5 mr-0.5" /> : <TrendingDown className="h-2.5 w-2.5 mr-0.5" />}
+   693→              {sig.bias}
+   694→            </Badge>
+   695→            <Badge variant="outline" className="text-[9px]">
+   696→              {sig.styleName}
+   697→            </Badge>
+   698→            {/* Confluence badge */}
+   699→            {deep?.confluence === 'MEGA' && (
+   700→              <Badge className="text-[9px] bg-purple-600 hover:bg-purple-600">
+   701→                🔥 MEGA ({deep.confluenceStyles.length} styles)
+   702→              </Badge>
+   703→            )}
+   704→            {deep?.confluence === 'STRONG' && (
+   705→              <Badge className="text-[9px] bg-blue-600 hover:bg-blue-600">
+   706→                ✅ STRONG (2 styles)
+   707→              </Badge>
+   708→            )}
+   709→            {/* 6-Layer validated badge */}
+   710→            {deep?.passedDeepAnalysis && (
+   711→              <Badge className="text-[9px] bg-emerald-600 hover:bg-emerald-600">
+   712→                ⭐ 6-LAYER VALIDATED
+   713→              </Badge>
+   714→            )}
+   715→          </div>
+   716→          <div className="text-[10px] text-zinc-500 mt-0.5">
+   717→            ${fmt(result.price)} • {result.change24h >= 0 ? '+' : ''}{result.change24h.toFixed(2)}% 24h • Vol ${formatNumber(result.volume24h)}
+   718→          </div>
+   719→        </div>
+   720→        <div className="text-right">
+   721→          {deep ? (
+   722→            <>
+   723→              <div className="text-base font-bold text-emerald-400">{deep.totalLayerScore.toFixed(0)}</div>
+   724→              <div className="text-[10px] text-zinc-500">6-layer score</div>
+   725→              <div className="text-[10px] text-zinc-400">conf: {sig.confidence.toFixed(0)}%</div>
+   726→            </>
+   727→          ) : (
+   728→            <>
+   729→              <div className="text-base font-bold">{sig.confidence.toFixed(0)}%</div>
+   730→              <div className="text-[10px] text-zinc-500">confidence</div>
+   731→            </>
+   732→          )}
+   733→          <div className="text-[10px] text-emerald-400">1:{sig.rr.toFixed(2)}</div>
+   734→        </div>
+   735→      </div>
+   736→      
+   737→      {/* Trade Plan */}
+   738→      <div className="grid grid-cols-4 gap-1 text-[10px]">
+   739→        <div>
+   740→          <span className="text-zinc-500">Entry:</span>
+   741→          <div className="font-mono text-blue-400">{fmt(sig.entry)}</div>
+   742→        </div>
+   743→        <div>
+   744→          <span className="text-zinc-500">SL:</span>
+   745→          <div className="font-mono text-red-400">{fmt(sig.stopLoss)}</div>
+   746→        </div>
+   747→        <div>
+   748→          <span className="text-zinc-500">TP1:</span>
+   749→          <div className="font-mono text-emerald-400">{fmt(sig.takeProfits.tp1)}</div>
+   750→        </div>
+   751→        <div>
+   752→          <span className="text-zinc-500">TP2:</span>
+   753→          <div className="font-mono text-emerald-400">{fmt(sig.takeProfits.tp2)}</div>
+   754→        </div>
+   755→      </div>
+   756→      
+   757→      {/* Deep Analysis Breakdown */}
+   758→      {deep && (
+   759→        <div className="mt-2 pt-2 border-t border-zinc-800">
+   760→          <div className="grid grid-cols-3 gap-1 text-[10px]">
+   761→            <div className="bg-zinc-950/50 p-1 rounded">
+   762→              <div className="text-zinc-500">L1 Macro</div>
+   763→              <div className={`font-mono font-bold ${deep.macroAligned ? 'text-emerald-400' : 'text-yellow-400'}`}>
+   764→                {deep.macroScore.toFixed(0)} {deep.macroAligned ? '✅' : '⚠️'}
+   765→              </div>
+   766→            </div>
+   767→            <div className="bg-zinc-950/50 p-1 rounded">
+   768→              <div className="text-zinc-500">L3 Fund</div>
+   769→              <div className={`font-mono font-bold ${deep.fundamentalPass ? 'text-emerald-400' : 'text-red-400'}`}>
+   770→                {deep.fundamentalScore.toFixed(0)} {deep.fundamentalPass ? '✅' : '❌'}
+   771→              </div>
+   772→            </div>
+   773→            <div className="bg-zinc-950/50 p-1 rounded">
+   774→              <div className="text-zinc-500">L5 Check</div>
+   775→              <div className={`font-mono font-bold ${deep.checklistPassed ? 'text-emerald-400' : 'text-yellow-400'}`}>
+   776→                {deep.checklistScore.toFixed(0)} {deep.checklistPassed ? '✅' : '⚠️'}
+   777→              </div>
+   778→            </div>
+   779→          </div>
+   780→          
+   781→          {/* Recommendation */}
+   782→          <div className={`mt-1 p-1 rounded text-[10px] text-center font-medium ${
+   783→            deep.recommendation === 'STRONG_BUY' ? 'bg-emerald-900/50 text-emerald-300' :
+   784→            deep.recommendation === 'BUY' ? 'bg-blue-900/50 text-blue-300' :
+   785→            deep.recommendation === 'WATCH' ? 'bg-yellow-900/50 text-yellow-300' :
+   786→            'bg-red-900/50 text-red-300'
+   787→          }`}>
+   788→            {deep.recommendation === 'STRONG_BUY' && '⭐ STRONG BUY — '}
+   789→            {deep.recommendation === 'BUY' && '✅ BUY — '}
+   790→            {deep.recommendation === 'WATCH' && '👀 WATCH — '}
+   791→            {deep.recommendation === 'AVOID' && '❌ AVOID — '}
+   792→            {deep.recommendationReason}
+   793→          </div>
+   794→          
+   795→          {/* Confluence styles */}
+   796→          {deep.confluenceStyles.length > 1 && (
+   797→            <div className="mt-1 text-[10px] text-zinc-500">
+   798→              Styles agree: {deep.confluenceStyles.join(' + ')}
+   799→            </div>
+   800→          )}
+   801→          
+   802→          {/* Macro notes */}
+   803→          {deep.macroNotes.length > 0 && (
+   804→            <div className="mt-1">
+   805→              {deep.macroNotes.slice(0, 2).map((n, i) => (
+   806→                <div key={i} className="text-[9px] text-zinc-500">{n}</div>
+   807→              ))}
+   808→            </div>
+   809→          )}
+   810→          
+   811→          {/* Fundamental notes */}
+   812→          {deep.fundamentalNotes.length > 0 && (
+   813→            <div className="mt-1">
+   814→              {deep.fundamentalNotes.slice(0, 2).map((n, i) => (
+   815→                <div key={i} className="text-[9px] text-zinc-500">{n}</div>
+   816→              ))}
+   817→            </div>
+   818→          )}
+   819→        </div>
+   820→      )}
+   821→      
+   822→      {/* Style Reasons (if no deep analysis) */}
+   823→      {!deep && sig.reasons.length > 0 && (
+   824→        <div className="mt-2 pt-2 border-t border-zinc-800">
+   825→          <div className="text-[10px] text-zinc-500 mb-1">Reasons:</div>
+   826→          {sig.reasons.slice(0, 3).map((r, i) => (
+   827→            <div key={i} className="text-[10px] text-zinc-400">{r}</div>
+   828→          ))}
+   829→        </div>
+   830→      )}
+   831→      
+   832→      {/* Multi-Timeframe Analysis */}
+   833→      {mtf && (
+   834→        <div className="mt-2 pt-2 border-t border-zinc-800">
+   835→          <div className="text-[10px] text-zinc-500 mb-1">🕐 Multi-Timeframe ({mtf.alignmentScore.toFixed(0)}% aligned):</div>
+   836→          <div className="flex flex-wrap gap-1">
+   837→            {mtf.analyses.map(a => (
+   838→              <Badge key={a.timeframe} variant="outline" className={`text-[8px] ${
+   839→                a.signal === 'LONG' ? 'border-emerald-500 text-emerald-400' :
+   840→                a.signal === 'SHORT' ? 'border-red-500 text-red-400' : 'text-zinc-500'
+   841→              }`}>
+   842→                {a.timeframe}: {a.signal}
+   843→              </Badge>
+   844→            ))}
+   845→          </div>
+   846→          <div className="text-[9px] text-zinc-500 mt-1">
+   847→            {mtf.bullishCount}B / {mtf.bearishCount}B / {mtf.neutralCount}N
+   848→            {mtf.conflict && <span className="text-red-400 ml-1">⚠️ CONFLICT</span>}
+   849→          </div>
+   850→        </div>
+   851→      )}
+   852→      
+   853→      {/* Event Intelligence */}
+   854→      {events && events.marketRiskLevel !== 'LOW' && (
+   855→        <div className={`mt-2 pt-2 border-t border-zinc-800 p-1 rounded ${
+   856→          events.marketRiskLevel === 'CRITICAL' ? 'bg-red-950/30' :
+   857→          events.marketRiskLevel === 'HIGH' ? 'bg-orange-950/30' :
+   858→          'bg-yellow-950/30'
+   859→        }`}>
+   860→          <div className="text-[10px] font-medium text-zinc-400">
+   861→            📅 Event Risk: <span className={
+   862→              events.marketRiskLevel === 'CRITICAL' ? 'text-red-400' :
+   863→              events.marketRiskLevel === 'HIGH' ? 'text-orange-400' :
+   864→              'text-yellow-400'
+   865→            }>{events.marketRiskLevel}</span>
+   866→          </div>
+   867→          <div className="text-[9px] text-zinc-500 mt-0.5">{events.recommendationReason}</div>
+   868→        </div>
+   869→      )}
+   870→      
+   871→      {/* Smart Recommendation */}
+   872→      {rec && (
+   873→        <div className={`mt-2 pt-2 border-t border-zinc-800 p-2 rounded ${
+   874→          rec.finalRecommendation === 'STRONG_BUY' ? 'bg-emerald-950/40' :
+   875→          rec.finalRecommendation === 'BUY' ? 'bg-blue-950/40' :
+   876→          rec.finalRecommendation === 'WATCH' ? 'bg-yellow-950/40' :
+   877→          'bg-red-950/40'
+   878→        }`}>
+   879→          <div className="flex items-center justify-between mb-1">
+   880→            <span className="text-[10px] font-bold">
+   881→              🏆 {rec.finalRecommendation.replace(/_/g, ' ')}
+   882→            </span>
+   883→            <span className="text-[10px] font-mono">
+   884→              Score: {rec.finalScore.toFixed(0)}/100
+   885→            </span>
+   886→          </div>
+   887→          <div className="text-[9px] text-zinc-400 mb-1">
+   888→            📋 {rec.tradeTypeLabel} • ⏱️ {rec.estimatedHoldTime}
+   889→          </div>
+   890→          <div className="text-[9px] text-zinc-500">
+   891→            💡 {rec.recommendationReason}
+   892→          </div>
+   893→          
+   894→          {/* Detailed Trade Plan */}
+   895→          <div className="mt-2 pt-1 border-t border-zinc-800/50">
+   896→            <div className="text-[9px] text-zinc-400 mb-0.5">
+   897→              Entry: {rec.entryStrategy.replace(/_/g, ' ')}
+   898→            </div>
+   899→            <div className="text-[9px] text-zinc-500 mb-0.5">
+   900→              Trigger: {rec.entryTrigger}
+   901→            </div>
+   902→            <div className="grid grid-cols-4 gap-1 text-[9px] mt-1">
+   903→              <div>
+   904→                <span className="text-zinc-500">SL:</span>
+   905→                <div className="font-mono text-red-400">{fmt(rec.stopLoss)}</div>
+   906→                <div className="text-[8px] text-zinc-600">-{rec.stopLossPercentage.toFixed(1)}%</div>
+   907→              </div>
+   908→              <div>
+   909→                <span className="text-zinc-500">TP1:</span>
+   910→                <div className="font-mono text-emerald-400">{fmt(rec.takeProfits.tp1.price)}</div>
+   911→                <div className="text-[8px] text-zinc-600">1:{rec.takeProfits.tp1.rr.toFixed(1)}</div>
+   912→              </div>
+   913→              <div>
+   914→                <span className="text-zinc-500">TP2:</span>
+   915→                <div className="font-mono text-emerald-400">{fmt(rec.takeProfits.tp2.price)}</div>
+   916→                <div className="text-[8px] text-zinc-600">1:{rec.takeProfits.tp2.rr.toFixed(1)}</div>
+   917→              </div>
+   918→              <div>
+   919→                <span className="text-zinc-500">TP3:</span>
+   920→                <div className="font-mono text-emerald-400">{fmt(rec.takeProfits.tp3.price)}</div>
+   921→                <div className="text-[8px] text-zinc-600">1:{rec.takeProfits.tp3.rr.toFixed(1)}</div>
+   922→              </div>
+   923→            </div>
+   924→            
+   925→            {/* Risk */}
+   926→            <div className="mt-1 pt-1 border-t border-zinc-800/50">
+   927→              <div className="text-[9px] text-zinc-400">
+   928→                💰 Risk: <span className="font-mono">{rec.positionSize}</span>
+   929→                <span className="text-zinc-500 ml-1">(Max loss: ${rec.maxLossUSD.toFixed(2)})</span>
+   930→              </div>
+   931→            </div>
+   932→            
+   933→            {/* Rules */}
+   934→            <div className="mt-1 pt-1 border-t border-zinc-800/50">
+   935→              <div className="text-[9px] text-zinc-500 mb-0.5">📜 Rules:</div>
+   936→              {rec.rules.slice(0, 3).map((rule, i) => (
+   937→                <div key={i} className="text-[8px] text-zinc-500">• {rule}</div>
+   938→              ))}
+   939→            </div>
+   940→          </div>
+   941→        </div>
+   942→      )}
+   943→      
+   944→      <Button size="sm" variant="outline" className="w-full mt-2 text-xs h-6" onClick={onNotify}>
+   945→        <Send className="h-3 w-3 mr-1" />
+   946→        {rec?.finalRecommendation === 'STRONG_BUY' ? 'Send Alert (STRONG BUY)' :
+   947→         rec?.finalRecommendation === 'AVOID' ? 'Send Alert (AVOID warning)' :
+   948→         deep?.passedDeepAnalysis ? 'Send Alert (6-Layer Validated)' : 'Send Alert'}
+   949→      </Button>
+   950→    </div>
+   951→  )
+   952→}
+   953→

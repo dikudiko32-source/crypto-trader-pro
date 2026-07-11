@@ -116,7 +116,7 @@ export function generateSmartRecommendation(
   }
   
   // ---- Stop loss ----
-  const slDistance = Math.abs(price - signal.stopLoss)
+  const slDistance = Math.abs(price - signal.stopLoss) || 0.0001  // Guard against zero
   const slPercentage = (slDistance / price) * 100
   
   let stopLossType: 'STRUCTURE' | 'ATR' | 'PERCENTAGE' | 'TIME_BASED'

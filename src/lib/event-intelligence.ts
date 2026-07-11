@@ -102,15 +102,16 @@ function getNextOccurrence(dayOfWeekOrDate: number, hourWIB: number): string {
   const now = new Date()
   const target = new Date(now)
   
-  if (dayOfWeekOrDate <= 4) {
-    // Day of week (0=Sunday, 4=Thursday)
+  if (dayOfWeekOrDate >= 0 && dayOfWeekOrDate <= 6) {
+    // Day of week (0=Sunday, 4=Thursday, 5=Friday, 6=Saturday)
     const currentDay = now.getDay()
     let daysUntil = dayOfWeekOrDate - currentDay
     if (daysUntil < 0) daysUntil += 7
+    // If today is the target day but time already passed, go to next week
     if (daysUntil === 0 && now.getHours() >= hourWIB) daysUntil = 7
     target.setDate(now.getDate() + daysUntil)
   } else {
-    // Date of month
+    // Date of month (e.g., 15, 28)
     target.setDate(dayOfWeekOrDate)
     if (target < now) {
       target.setMonth(target.getMonth() + 1)
@@ -138,12 +139,12 @@ export async function getEventIntelligence(): Promise<EventIntelligence> {
   
   // Critical events next 24h
   const criticalEventsNext24h = upcomingEvents.filter(e => 
-    e.hoursUntil < 24 && (e.impact === 'CRITICAL' || e.impact === 'HIGH')
+    e.hoursUntil < 24 && (e.impact === 'CRITICAL' || e.impact === 'HIGH' || e.impact === 'CRITICAL')
   )
   
   // High impact events next 48h
   const highImpactEventsNext48h = upcomingEvents.filter(e => 
-    e.hoursUntil < 48 && e.impact === 'HIGH'
+    e.hoursUntil < 48 && e.impact === 'HIGH' || e.impact === 'CRITICAL'
   )
   
   // Determine market risk level

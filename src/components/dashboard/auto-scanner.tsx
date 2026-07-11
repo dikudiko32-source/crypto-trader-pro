@@ -65,13 +65,15 @@ export function AutoScanner() {
     })
   }
 
+  // Use ref to always have latest runScan (avoids stale closure in setInterval)
+  const runScanRef = useRef<() => void>(() => {})
+
   // ---- Run scan (ENHANCED Phase 6) ----
   const runScan = useCallback(async () => {
     setScanning(true)
     setProgress({ scanned: 0, total: 0, found: 0 })
     
     try {
-      // MTF config (all 7 timeframes)
       const mtfConfig = {
         timeframes: ['5m', '15m', '30m', '1H', '4H', '12H', '1D'] as ScanTimeframe[],
         htfTimeframe: '1D' as ScanTimeframe,
@@ -102,9 +104,9 @@ export function AutoScanner() {
         message: `${summary.totalScanned} coins scanned, ${summary.totalWithSignals} setups found (${summary.longSignals}L / ${summary.shortSignals}S) | Market: ${summary.marketRiskLevel} | Mode: ${summary.tradingMode}`,
       })
       
-      // Send notifications for top picks
       if (summary.topPicks.length > 0) {
-        await sendNotifications(summary.topPicks.slice(0, 3))
+        // Call sendNotifications directly (not via closure)
+        await sendNotificationsInternal(summary.topPicks.slice(0, 3))
       }
     } catch (err) {
       console.error('Scan failed:', err)
@@ -116,55 +118,57 @@ export function AutoScanner() {
     } finally {
       setScanning(false)
     }
-  }, [scannerConfig, scheduledScan, pushAlert, setLastScanSummary, updateScheduledScan, settings])
+  }, [scannerConfig, scheduledScan.totalScansRun, pushAlert, setLastScanSummary, updateScheduledScan, settings.capital, settings.riskPerTrade])
 
-  // ---- Send notifications ----
-  // Logic:
-  // - Telegram: ONLY for setups that passed deep analysis (6-layer validated) + smart recommendation BUY/STRONG_BUY
-  // - Browser Push: for all setups with confidence > threshold (broader)
-  // - WhatsApp/Email: for deep-passed only (semi-manual)
-  async function sendNotifications(picks: EnhancedScannerResult[]) {
+  // Keep ref updated with latest runScan
+  runScanRef.current = runScan
+
+  // Internal sendNotifications that reads current state via refs
+  const telegramTokenRef = useRef(telegramBotToken)
+  const telegramChatIdRef = useRef(telegramChatId)
+  telegramTokenRef.current = telegramBotToken
+  telegramChatIdRef.current = telegramChatId
+
+  async function sendNotificationsInternal(picks: EnhancedScannerResult[]) {
     let alertsSent = 0
     let telegramSent = 0
     let browserPushSent = 0
+    
+    const currentToken = telegramTokenRef.current
+    const currentChatId = telegramChatIdRef.current
     
     for (const pick of picks) {
       const deep = pick.deepAnalysis
       const rec = pick.smartRecommendation
       const isDeepPassed = deep?.passedDeepAnalysis === true
-      const isStrongConfluence = deep?.confluence === 'STRONG' || deep?.confluence === 'MEGA'
       const isRecommended = rec?.finalRecommendation === 'STRONG_BUY' || rec?.finalRecommendation === 'BUY'
       
-      // Telegram: ONLY for deep-passed + recommended (Phase 6: also check smart recommendation)
-      if (scannerConfig.notifyTelegram && telegramBotToken && telegramChatId && isDeepPassed && isRecommended) {
+      // Telegram: ONLY for deep-passed + recommended
+      if (scannerConfig.notifyTelegram && currentToken && currentChatId && isDeepPassed && isRecommended) {
         try {
-          // Use enhanced alert format (ultra detailed) if available
           const message = rec && pick.mtfAnalysis && pick.eventIntelligence
             ? formatEnhancedAlertMessage(pick)
-            : deep 
-            ? formatDeepAlertMessage(pick, deep, await getScanMacroData())
             : formatAlertMessage(pick)
           
           const res = await fetch('/api/telegram/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              botToken: telegramBotToken,
-              chatId: telegramChatId,
+              botToken: currentToken,
+              chatId: currentChatId,
               message,
             }),
           })
           if (res.ok) {
             alertsSent++
             telegramSent++
-            console.log(`Telegram alert sent for ${pick.symbol} (score ${rec?.finalScore.toFixed(0)}, rec ${rec?.finalRecommendation})`)
           }
         } catch (err) {
           console.error('Telegram send failed:', err)
         }
       }
       
-      // Browser Push: for ALL setups with confidence > threshold (broader)
+      // Browser Push
       if (scannerConfig.notifyBrowserPush && notificationsEnabled) {
         let title = `🔔 ${pick.name} ${pick.bestSignal!.bias} Signal`
         let body = `${pick.bestSignal!.styleName} • Confidence ${pick.bestSignal!.confidence.toFixed(0)}%`
@@ -178,9 +182,6 @@ export function AutoScanner() {
         } else if (isDeepPassed) {
           title = `✅ ${pick.name} ${pick.bestSignal!.bias} — 6-Layer Validated`
           body = `${pick.bestSignal!.styleName} • Score ${deep?.totalLayerScore.toFixed(0)}/100`
-        } else if (isStrongConfluence) {
-          title = `🔥 ${pick.name} ${pick.bestSignal!.bias} — Strong Confluence`
-          body = `${pick.bestSignal!.styleName} • Confluence: ${deep?.confluence}`
         }
         
         showNotification(title, body, pick.symbol)
@@ -188,7 +189,7 @@ export function AutoScanner() {
         browserPushSent++
       }
       
-      // WhatsApp (semi-auto): for deep-passed + recommended only
+      // WhatsApp
       if (scannerConfig.notifyWhatsApp && whatsappPhone && isDeepPassed && isRecommended) {
         const waMessage = formatWhatsAppMessage(pick)
         const waUrl = `https://wa.me/${whatsappPhone}?text=${encodeURIComponent(waMessage)}`
@@ -196,7 +197,7 @@ export function AutoScanner() {
         alertsSent++
       }
       
-      // Email (semi-auto): for deep-passed + recommended only
+      // Email
       if (scannerConfig.notifyEmail && emailAddress && isDeepPassed && isRecommended) {
         const subject = `🚨 ${pick.name} ${pick.bestSignal!.bias} — ${rec?.finalRecommendation || 'Signal'}`
         const body = formatWhatsAppMessage(pick)
@@ -210,23 +211,26 @@ export function AutoScanner() {
       updateScheduledScan({
         totalAlertsSent: scheduledScan.totalAlertsSent + alertsSent,
       })
-      pushAlert({
-        type: 'INFO',
-        title: '📊 Notification Summary',
-        message: `${telegramSent} Telegram (deep+recommended) + ${browserPushSent} Browser Push (all candidates)`,
-      })
     }
   }
 
-  // Helper to get macro data (cached in component)
-  const [cachedMacro, setCachedMacro] = useState<{ fearGreed: number; fearGreedLabel: string } | null>(null)
+  // Keep sendNotifications compatible with ScannerResultCard
+  async function sendNotifications(picks: EnhancedScannerResult[]) {
+    return sendNotificationsInternal(picks)
+  }
+
+  // Helper to get macro data (cached with 5min TTL)
+  const macroCacheRef = useRef<{ data: { fearGreed: number; fearGreedLabel: string }; ts: number } | null>(null)
   async function getScanMacroData() {
-    if (cachedMacro) return cachedMacro
+    // Cache for 5 minutes
+    if (macroCacheRef.current && Date.now() - macroCacheRef.current.ts < 300000) {
+      return macroCacheRef.current.data
+    }
     try {
       const { getFearGreedIndex } = await import('@/lib/macro')
       const fg = await getFearGreedIndex()
       const data = { fearGreed: fg?.value || 50, fearGreedLabel: fg?.classification || 'Neutral' }
-      setCachedMacro(data)
+      macroCacheRef.current = { data, ts: Date.now() }
       return data
     } catch {
       return { fearGreed: 50, fearGreedLabel: 'Neutral' }
@@ -250,7 +254,7 @@ export function AutoScanner() {
       
       scheduleRef.current = setInterval(() => {
         console.log('Auto-scan triggered')
-        runScan()
+        runScanRef.current()
       }, intervalMs)
     } else {
       updateScheduledScan({
@@ -263,7 +267,7 @@ export function AutoScanner() {
     return () => {
       if (scheduleRef.current) clearInterval(scheduleRef.current)
     }
-  }, [scannerConfig.autoScheduleHours])
+  }, [scannerConfig.autoScheduleHours, updateScheduledScan])
 
   const toggleStyle = (style: typeof STYLE_OPTIONS[number]['value']) => {
     const current = scannerConfig.styles
