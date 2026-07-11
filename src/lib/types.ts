@@ -256,6 +256,8 @@ export interface UserSettings {
   alertThreshold: number // 60-100, minimum score to alert
   moonPhaseWeight: boolean
   tradingPairs: string[] // watchlist
+  telegramBotToken: string | null  // Phase 5.5: persist telegram
+  telegramChatId: string | null
 }
 
 // ---- 6-Layer Score ----

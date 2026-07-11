@@ -103,6 +103,8 @@ const defaultSettings: UserSettings = {
   alertThreshold: 70,
   moonPhaseWeight: true,
   tradingPairs: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'AVAXUSDT', 'LINKUSDT', 'ARBUSDT', 'OPUSDT'],
+  telegramBotToken: null,
+  telegramChatId: null,
 }
 
 export const useAppStore = create<AppState>()(

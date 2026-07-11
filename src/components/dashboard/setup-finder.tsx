@@ -22,7 +22,7 @@ import {
 import type { Candle, Timeframe, TechnicalAnalysis, Bias, TradeSetup, SetupType, LayerScore, CoinFundamental } from '@/lib/types'
 import { useAppStore, formatIDR, formatNumber } from '@/store/app-store'
 import { CandlestickChart } from '@/components/charts/candlestick-chart'
-import { MacroDashboard } from './macro-dashboard'
+// MacroDashboard import removed (unused)
 
 interface SetupResult {
   setup: TradeSetup
@@ -81,8 +81,8 @@ export function SetupFinder() {
       )
 
       // Check we have at least 1H and 4H data (the entry timeframes)
-      if (!timeframeData['1H'] || !timeframeData['4H']) {
-        throw new Error('Failed to fetch 1H/4H data. Check symbol.')
+      if (!timeframeData['1H'] || !timeframeData['4H'] || candlesByTf['4H'].length < 20 || candlesByTf['1H'].length < 20) {
+        throw new Error('Insufficient candle data for 1H/4H. Check symbol.')
       }
 
       // Fetch additional data
@@ -143,6 +143,10 @@ export function SetupFinder() {
       let tps: { tp1: number; tp2: number; tp3: number }
       let entryTrigger: string
 
+      if (bias === 'NEUTRAL') {
+        setError('Pilih LONG atau SHORT — NEUTRAL tidak bisa dianalisis')
+        return
+      }
       if (bias === 'LONG') {
         // Long setup: entry at pullback to fib 0.5-0.618 + EMA50 confluence
         const fib618 = fib.levels['0.618']
@@ -161,7 +165,7 @@ export function SetupFinder() {
           tp3: fib.extensions['1.618'],
         }
         entryTrigger = `1H close above ${((entryZone.lower + entryZone.upper) / 2 * 1.005).toFixed(currentPrice < 1 ? 5 : 2)} with volume 1.5x avg`
-      } else {
+      } else if (bias === 'SHORT') {
         // Short setup: entry at pullback to fib 0.5-0.618 (from highs)
         const fib618 = fib.levels['0.618']
         const fib500 = fib.levels['0.500']
@@ -194,24 +198,48 @@ export function SetupFinder() {
       const nominalValue = quantity * entryMid
 
       // Score all 6 layers
-      // Macro: build simplified macro data
+      // Macro: build macro data from real fetched data (fearGreed, funding, etc.)
+      // Import macro functions for real data
+      const { getFearGreedIndex, getMoonPhase, getEconomicEvents } = await import('@/lib/macro')
+      const { getGlobalData } = await import('@/lib/coingecko')
+      const [fearGreedData, globalData] = await Promise.all([
+        getFearGreedIndex(),
+        getGlobalData(),
+      ])
+      const moonPhase = getMoonPhase()
+      const economicEvents = getEconomicEvents()
+      
+      const fgValue = fearGreedData?.value || 50
+      const btcDom = globalData?.btcDominance || 54
+      const btcDomTrend: 'UP' | 'DOWN' | 'FLAT' = btcDom > 52 ? 'UP' : 'DOWN'
+      const usdtTrend: 'UP' | 'DOWN' | 'FLAT' = fgValue < 40 ? 'UP' : 'DOWN'
+      
+      let fgLabel: 'Extreme Fear' | 'Fear' | 'Neutral' | 'Greed' | 'Extreme Greed' = 'Neutral'
+      if (fgValue < 25) fgLabel = 'Extreme Fear'
+      else if (fgValue < 45) fgLabel = 'Fear'
+      else if (fgValue < 55) fgLabel = 'Neutral'
+      else if (fgValue < 75) fgLabel = 'Greed'
+      else fgLabel = 'Extreme Greed'
+      
       const macroData = {
-        btcDominance: 54,
-        btcDominanceTrend: 'DOWN' as const,
-        usdtDominance: 5.8,
-        usdtDominanceTrend: 'DOWN' as const,
-        otherBtcRatio: 0.42,
+        btcDominance: btcDom,
+        btcDominanceTrend: btcDomTrend,
+        usdtDominance: 100 - btcDom - (globalData?.ethDominance || 17),
+        usdtDominanceTrend: usdtTrend,
+        otherBtcRatio: btcDom > 0 ? (100 - btcDom) / btcDom : 0.5,
         otherBtcTrend: 'UP' as const,
-        fearGreed: 32,
-        fearGreedLabel: 'Fear' as const,
+        fearGreed: fgValue,
+        fearGreedLabel: fgLabel,
         fundingAggregate: funding?.fundingRate || 0.0008,
         openInterestBtc: oi?.openInterestValue || 18e9,
         longShortRatio: lsr?.longShortRatio || 1.0,
-        moonPhase: { phase: 'Waxing Crescent', emoji: '🌒', bullBearBias: 'BULLISH' as const, daysToNext: 5 },
-        economicEvents: [],
-        macroVerdict: bias as Bias,
+        moonPhase,
+        economicEvents,
+        macroVerdict: 'NEUTRAL' as Bias, // Will be set from scoreMacro result below
       }
       const macroScore = scoreMacro(macroData)
+      // Use the real macro verdict from scoreMacro, not user's bias
+      macroData.macroVerdict = macroScore.bias
       const narrativeScore = scoreNarrative(null) // No narrative context in this MVP
       const fundamentalScore = scoreFundamental(fundamental)
       const technicalScore = scoreTechnical(timeframeData, bias)
@@ -303,9 +331,13 @@ export function SetupFinder() {
     }
   }
 
+  const [savedSetupId, setSavedSetupId] = useState<string | null>(null)
+  
   function saveSetup() {
     if (!result) return
+    if (savedSetupId === result.setup.id) return // Prevent duplicate save
     addSetup(result.setup)
+    setSavedSetupId(result.setup.id)
     pushAlert({
       type: 'INFO',
       title: 'Setup Saved',
@@ -319,7 +351,7 @@ export function SetupFinder() {
     ))
   }
 
-  const formatPrice = (p: number) => p < 1 ? p.toFixed(5) : p < 100 ? p.toFixed(2) : p.toFixed(2)
+  const formatPrice = (p: number) => p < 1 ? p.toFixed(5) : p < 100 ? p.toFixed(2) : p.toFixed(0)
 
   return (
     <div className="space-y-4">
@@ -533,8 +565,13 @@ export function SetupFinder() {
               </CardContent>
             </Card>
 
-            <Button onClick={saveSetup} className="w-full">
-              Save Setup to Tracker
+            <Button 
+              onClick={saveSetup} 
+              className="w-full"
+              disabled={savedSetupId === result?.setup.id}
+              variant={savedSetupId === result?.setup.id ? "outline" : "default"}
+            >
+              {savedSetupId === result?.setup.id ? '✓ Setup Saved' : 'Save Setup to Tracker'}
             </Button>
           </TabsContent>
 

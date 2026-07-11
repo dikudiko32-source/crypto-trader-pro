@@ -12,11 +12,19 @@ import { useAppStore } from '@/store/app-store'
 
 export function TelegramIntegration() {
   const { settings, updateSettings, pushAlert, priceAlerts } = useAppStore()
-  const [botToken, setBotToken] = useState(settings.binanceApiKey ? '' : '') // placeholder
-  const [chatId, setChatId] = useState('')
+  const [botToken, setBotToken] = useState(settings.telegramBotToken || '')
+  const [chatId, setChatId] = useState(settings.telegramChatId || '')
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
   const [showGuide, setShowGuide] = useState(false)
+
+  // Save to store when user types (debounced via onBlur)
+  function saveToken() {
+    updateSettings({ 
+      telegramBotToken: botToken || null,
+      telegramChatId: chatId || null,
+    })
+  }
 
   async function testMessage() {
     if (!botToken || !chatId) {
@@ -38,7 +46,8 @@ export function TelegramIntegration() {
       const data = await res.json()
       if (res.ok && data.success) {
         setTestResult('✅ Test berhasil! Cek Telegram Anda.')
-        // Save to settings (will need to add telegramBotToken, telegramChatId to types)
+        // Save to store on successful test
+        saveToken()
         pushAlert({
           type: 'INFO',
           title: 'Telegram Connected',
@@ -77,6 +86,7 @@ export function TelegramIntegration() {
               type="password"
               value={botToken}
               onChange={(e) => setBotToken(e.target.value)}
+              onBlur={saveToken}
               placeholder="123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
               className="bg-zinc-950 border-zinc-700 text-sm font-mono"
             />
@@ -86,6 +96,7 @@ export function TelegramIntegration() {
             <Input
               value={chatId}
               onChange={(e) => setChatId(e.target.value)}
+              onBlur={saveToken}
               placeholder="123456789"
               className="bg-zinc-950 border-zinc-700 text-sm font-mono"
             />

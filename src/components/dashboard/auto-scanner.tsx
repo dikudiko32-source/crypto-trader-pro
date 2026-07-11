@@ -36,27 +36,34 @@ export function AutoScanner() {
     lastScanSummary, setLastScanSummary,
     scheduledScan, updateScheduledScan,
     notificationChannels, updateNotificationChannels,
-    settings,
+    settings, updateSettings,
     pushAlert,
   } = useAppStore()
   
   const { notificationsEnabled, showNotification } = useNotifications()
   const [scanning, setScanning] = useState(false)
   const [progress, setProgress] = useState({ scanned: 0, total: 0, found: 0 })
-  const [telegramBotToken, setTelegramBotToken] = useState('')
-  const [telegramChatId, setTelegramChatId] = useState('')
+  // Read from store (persisted) instead of separate localStorage
+  const [telegramBotToken, setTelegramBotToken] = useState(settings.telegramBotToken || '')
+  const [telegramChatId, setTelegramChatId] = useState(settings.telegramChatId || '')
   const [whatsappPhone, setWhatsappPhone] = useState('')
   const [emailAddress, setEmailAddress] = useState('')
   const [showSetup, setShowSetup] = useState(false)
   const scheduleRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Telegram bot token dari localStorage (kalau pernah diset di tab Telegram)
+  // Sync local state if settings change (e.g., user updates in Telegram tab)
   useEffect(() => {
-    const stored = localStorage.getItem('telegram-bot-token')
-    if (stored) setTelegramBotToken(stored)
-    const storedChat = localStorage.getItem('telegram-chat-id')
-    if (storedChat) setTelegramChatId(storedChat)
-  }, [])
+    setTelegramBotToken(settings.telegramBotToken || '')
+    setTelegramChatId(settings.telegramChatId || '')
+  }, [settings.telegramBotToken, settings.telegramChatId])
+
+  // Save telegram token to store when user types in Scanner
+  function saveTelegramToken() {
+    updateSettings({ 
+      telegramBotToken: telegramBotToken || null,
+      telegramChatId: telegramChatId || null,
+    })
+  }
 
   // ---- Run scan (ENHANCED Phase 6) ----
   const runScan = useCallback(async () => {
@@ -343,20 +350,16 @@ export function AutoScanner() {
                   <Input
                     type="password"
                     value={telegramBotToken}
-                    onChange={(e) => {
-                      setTelegramBotToken(e.target.value)
-                      localStorage.setItem('telegram-bot-token', e.target.value)
-                    }}
+                    onChange={(e) => setTelegramBotToken(e.target.value)}
+                    onBlur={saveTelegramToken}
                     placeholder="123456789:ABCdef..."
                     className="bg-zinc-950 border-zinc-700 text-xs font-mono"
                   />
                   <Label className="text-xs">Telegram Chat ID</Label>
                   <Input
                     value={telegramChatId}
-                    onChange={(e) => {
-                      setTelegramChatId(e.target.value)
-                      localStorage.setItem('telegram-chat-id', e.target.value)
-                    }}
+                    onChange={(e) => setTelegramChatId(e.target.value)}
+                    onBlur={saveTelegramToken}
                     placeholder="123456789"
                     className="bg-zinc-950 border-zinc-700 text-xs font-mono"
                   />
