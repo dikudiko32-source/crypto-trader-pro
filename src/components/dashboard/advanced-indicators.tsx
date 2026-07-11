@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Loader2, Activity, Layers, TrendingUp } from 'lucide-react'
 import { getKlines } from '@/lib/binance'
+import { isAbortError } from '@/hooks/use-safe-async'
 import { vwap, volumeProfile, ichimoku, stochasticRSI, williamsR, cvd } from '@/lib/indicators'
 import { calculateMultiTFAlignment } from '@/lib/scoring'
 import { analyzeTimeframe } from '@/lib/indicators'
@@ -29,17 +30,20 @@ export function AdvancedIndicators() {
     stochRsi: null, williamsR: null, cvd: null, alignment: null,
   })
 
+  const isMountedRef = useRef(true)
+  
   async function analyze() {
     setLoading(true)
     try {
-      // Fetch 4H candles (most useful for these indicators)
       const candles4H = await getKlines(symbol, '4H', 200)
       const candles1D = await getKlines(symbol, '1D', 200)
       const candles1W = await getKlines(symbol, '1W', 200)
       const candles1H = await getKlines(symbol, '1H', 200)
       
+      if (!isMountedRef.current) return
+      
       if (candles4H.length === 0) {
-        alert('Failed to fetch data')
+        console.warn('No candle data returned')
         return
       }
       
@@ -72,15 +76,17 @@ export function AdvancedIndicators() {
         alignment,
       })
     } catch (err) {
+      if (isAbortError(err) || !isMountedRef.current) return
       console.error(err)
-      alert('Analysis failed')
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
+    isMountedRef.current = true
     analyze()
+    return () => { isMountedRef.current = false }
   }, [])
 
   const fmt = (n: number, d = 2) => n < 1 ? n.toFixed(5) : n.toFixed(d)

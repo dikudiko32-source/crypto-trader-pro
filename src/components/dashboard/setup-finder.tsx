@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -53,13 +53,17 @@ export function SetupFinder() {
 
   const { settings, addSetup, pushAlert, setups } = useAppStore()
 
+  const isMountedRef = useRef(true)
+
   // Load top coins for autocomplete
   useEffect(() => {
+    isMountedRef.current = true
     async function loadCoins() {
       const coins = await getTopCoins(100)
-      setAllCoins(coins)
+      if (isMountedRef.current) setAllCoins(coins)
     }
     loadCoins()
+    return () => { isMountedRef.current = false }
   }, [])
 
   async function analyze() {
@@ -324,10 +328,13 @@ export function SetupFinder() {
         },
       })
     } catch (err) {
+      if (!isMountedRef.current) return
+      const errMsg = err instanceof Error ? err.message : ''
+      if (errMsg.includes('Failed to fetch') || errMsg.includes('aborted')) return
       console.error(err)
       setError(err instanceof Error ? err.message : 'Analysis failed')
     } finally {
-      setLoading(false)
+      if (isMountedRef.current) setLoading(false)
     }
   }
 

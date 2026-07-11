@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -68,6 +68,8 @@ export function TradingStyles() {
   const [signals, setSignals] = useState<Record<string, TradingStyleSignal | null>>({})
   const [activeStyle, setActiveStyle] = useState('TREND_FOLLOWING')
 
+  const isMountedRef = useRef(true)
+  
   async function analyze() {
     setLoading(true)
     try {
@@ -76,8 +78,10 @@ export function TradingStyles() {
         getKlines(symbol, '4H', 100),
       ])
       
+      if (!isMountedRef.current) return
+      
       if (daily.length === 0 || h4.length === 0) {
-        alert('Failed to fetch data')
+        console.warn('No candle data returned')
         return
       }
       
@@ -95,7 +99,9 @@ export function TradingStyles() {
   }
 
   useEffect(() => {
+    isMountedRef.current = true
     analyze()
+    return () => { isMountedRef.current = false }
   }, [])
 
   function saveAsSetup(signal: TradingStyleSignal) {
